@@ -16,7 +16,8 @@ an ostree/immutable image. One installer must work on both.
 | `scripts-<area>-fix/` | One out-of-tree fix: install, uninstall, verify, plus that fix's payload |
 | `scripts-audio-fix/` | Audio (Intel AVS + ALC255). Load-bearing rules: `scripts-audio-fix/AGENTS.md` |
 | `ucm2/`, `systemd/` | Audio payload at repo root (historical). New fixes do not add sibling top-level payload dirs |
-| `scripts-fingerprint-fix/` | Fingerprint (other session). Do not overwrite that tree |
+| `scripts-fingerprint-fix/` | Fingerprint (EgisTec 1c7a:0570). Load-bearing: `scripts-fingerprint-fix/AGENTS.md` |
+| `fingerprint/`, `udev/` | Fingerprint overlay sources and the capture-tool udev rule |
 
 Do not revive a generic `scripts/` directory. Do not put a second
 subsystem's files inside `scripts-audio-fix/`.

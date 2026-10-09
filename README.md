@@ -15,7 +15,7 @@ the same layer works on Fedora Atomic and on a mutable distro.
 | Area | Tree | Status |
 | --- | --- | --- |
 | Audio (Intel AVS + Realtek ALC255) | [`scripts-audio-fix/`](scripts-audio-fix/) | shipped |
-| Fingerprint | `scripts-fingerprint-fix/` | in progress |
+| Fingerprint (EgisTec 1c7a:0570) | [`scripts-fingerprint-fix/`](scripts-fingerprint-fix/) | shipped |
 
 New work goes in a new `scripts-<area>-fix/` directory. Do not dump
 unrelated fixes into `scripts-audio-fix/`.
@@ -171,6 +171,145 @@ layers are left alone.
 - DMIC gain: raise or lower the 70% `DMIC Volume` EnableSequence after
   listening on this chassis.
 
+## Fingerprint (EgisTec 1c7a:0570)
+
+The power-button pad is USB `1c7a:0570` (serial `W70D612F`). Fedora
+already ships libfprint's `egis0570` driver, so `fprintd-list` sees the
+device. That driver treats a **press** pad as a **swipe** and matches
+tiny 114×57 frames with NBIS/BOZORTH3. Enroll never becomes usable
+login. See [`fingerprint/diagnosis.md`](fingerprint/diagnosis.md).
+
+This overlay is a press-mode libfprint driver plus a clean-room
+Gabor/NCC matcher, loaded beside the ostree `libfprint` through
+`LD_LIBRARY_PATH`. It does not `rpm-ostree override` anything and it
+does not touch the ALSA/UCM tree.
+
+```
+scripts-fingerprint-fix/      install, uninstall, verify
+fingerprint/overlay/          press-mode egis0570 + ridge matcher
+fingerprint/capture/          libusb dump tool (PGM + mean/stddev)
+fingerprint/build-overlay.sh  builds libfprint 1.94.10 into fingerprint/dist/
+systemd/sf514-egis0570.conf   fprintd.service drop-in
+udev/70-sf514-egis0570.rules  seat uaccess for the capture tool
+```
+
+### Install
+
+Build in distrobox (meson, ninja, gcc, libusb, glib, gusb), then
+install on the Silverblue **host**. Scripts re-exec via
+`distrobox-host-exec sudo` when started inside a container.
+
+```bash
+make -C fingerprint/capture
+./fingerprint/build-overlay.sh
+sudo ./scripts-fingerprint-fix/install.sh
+./scripts-fingerprint-fix/verify.sh
+```
+
+Install will:
+
+1. Copy `libfprint-2.so.2` to `/var/usrlocal/lib64/` (`/usr/local/lib64`).
+2. Copy the capture tool to `/var/usrlocal/bin/sf514-egis0570-capture`.
+3. Install `systemd/sf514-egis0570.conf` as
+   `/etc/systemd/system/fprintd.service.d/sf514-egis0570.conf`
+   (`LD_LIBRARY_PATH=/var/usrlocal/lib64`).
+4. Install `udev/70-sf514-egis0570.rules` so the seat user can run the
+   capture tool (fprintd itself runs as root).
+5. Add a persistent SELinux `lib_t` fcontext on the overlay `.so` and
+   `restorecon`.
+6. `systemctl daemon-reload` and restart `fprintd.service`.
+
+`authselect` `with-fingerprint` stays as it is. PAM still talks to
+fprintd over D-Bus.
+
+Then enroll:
+
+```bash
+fprintd-enroll
+fprintd-verify
+```
+
+Press firmly, centred, and hold about a second. Lift between the eight
+enroll stages. Cover a few positions (centre, slight shifts) rather
+than one identical press.
+
+Stock swipe templates cannot be reused. If you had prints from the
+Fedora driver, delete them with `fprintd-delete` and enroll again.
+
+### Verify
+
+`scripts-fingerprint-fix/verify.sh` checks plumbing with no finger on
+the pad:
+
+- USB `1c7a:0570` present
+- Overlay `.so` at `/var/usrlocal/lib64/libfprint-2.so.2`
+- fprintd drop-in present (`LD_LIBRARY_PATH=/var/usrlocal/lib64`)
+- SELinux type `lib_t` on the overlay `.so`
+- `fprintd-list` names Egis 0570
+- `/proc/$(pidof fprintd)/maps` shows the overlay library
+
+`./scripts-fingerprint-fix/verify.sh --live` also enrolls (if this
+user has no prints) and runs `fprintd-verify` once.
+
+### Uninstall
+
+```bash
+sudo ./scripts-fingerprint-fix/uninstall.sh
+```
+
+That removes the drop-in, the overlay `.so` and soname links, the
+capture binary, and the SELinux fcontext this repo added, then restarts
+fprintd onto ostree `/usr/lib64/libfprint-2.so.2`. It does **not**
+delete `/var/lib/fprint/`. Use `fprintd-delete` if you want those
+prints gone.
+
+### Persistence across Silverblue rebases
+
+| Event | What happens |
+| --- | --- |
+| `rpm-ostree upgrade` | Ostree `/usr/lib64/libfprint-2.so.2` may change. Overlay `.so` and `/etc` drop-in stay. fprintd still loads the overlay. |
+| Layered-package churn | Unrelated. This overlay never adds `libfprint` to `LayeredPackages`. |
+| libfprint ABI jump on a Fedora rebase | Overlay `.so` may be too old. Re-run `fingerprint/build-overlay.sh`, then `sudo ./scripts-fingerprint-fix/install.sh`. |
+
+### Capture dumps (no overlay required)
+
+Only one process can claim the pad. Stop fprintd first.
+
+```bash
+sudo systemctl stop fprintd.service
+./fingerprint/capture/sf514-egis0570-capture --output-dir fingerprint/captures --label empty
+./fingerprint/capture/sf514-egis0570-capture --output-dir fingerprint/captures --label finger
+```
+
+Protocol notes: [`fingerprint/protocol.md`](fingerprint/protocol.md).
+
+Matcher self-test (no pad required):
+
+```bash
+make -C fingerprint/overlay self-test
+```
+
+Score two captured PGM frames with the same matcher the overlay uses:
+
+```bash
+./fingerprint/overlay/sf514-egis0570-ridge-eval fingerprint/captures/finger-000-frame0.pgm fingerprint/captures/finger-000-frame1.pgm
+```
+
+### Limits (fingerprint v1)
+
+- Matcher threshold in `fingerprint/overlay/egis0570.h`
+  (`EGIS0570_MATCH_THRESHOLD`) is a starting point. A too-low value
+  accepts the wrong finger.
+- 114×57 is a small sensor. Enroll with coverage. Adjacent fingers on
+  the same hand are the hard case.
+- fprintd `ProtectSystem=strict` plus SELinux `fprintd_t` require the
+  drop-in and `lib_t` on the overlay `.so`. A raw copy into
+  `/var/usrlocal` without `restorecon` will fail to mmap.
+
 ## License
 
 [The Unlicense](https://unlicense.org). Free for any use.
+
+`fingerprint/overlay/egis0570.c` and `egis0570.h` are derived from
+[libfprint](https://gitlab.freedesktop.org/libfprint/libfprint) and
+remain [LGPL-2.1-or-later](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html).

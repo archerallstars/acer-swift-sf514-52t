@@ -5,6 +5,14 @@
 /tmp/
 *.wav
 
+# Fingerprint overlay build products. Users run build-overlay.sh locally.
+/fingerprint/dist/
+/fingerprint/capture/sf514-egis0570-capture
+/fingerprint/overlay/sf514-egis0570-ridge-eval
+
+# Live pad dumps can contain fingerprint images; never commit them.
+/fingerprint/captures/
+
 # Editor / OS noise
 *~
 .DS_Store

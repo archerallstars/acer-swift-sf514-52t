@@ -1,0 +1,4 @@
+# Seat access so the logged-in user can run sf514-egis0570-capture.
+# fprintd opens the pad as root and does not need this rule.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1c7a", ATTR{idProduct}=="0570", TAG+="uaccess"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1c7a", ATTR{idProduct}=="0571", TAG+="uaccess"
