@@ -36,9 +36,10 @@ unrelated fixes into `scripts-audio-fix/`.
 | --- | --- |
 | Machine | Acer Swift SF514-52T |
 | CPU / chipset | Kaby Lake, Sunrise Point-LP |
+| Fingerprint | EgisTec `1c7a:0570` press pad (power button) |
 
-Per-fix hardware (codec, sensor, PCI ID) is documented in that fix's
-section below.
+Per-fix hardware (codec, USB IDs, mixer names) is documented in that
+fix's section below.
 
 ## Audio (`scripts-audio-fix`)
 
@@ -183,6 +184,13 @@ This overlay is a press-mode libfprint driver plus a clean-room
 Gabor/NCC matcher, loaded beside the ostree `libfprint` through
 `LD_LIBRARY_PATH`. It does not `rpm-ostree override` anything and it
 does not touch the ALSA/UCM tree.
+
+| | |
+| --- | --- |
+| Sensor | EgisTec Touch Fingerprint Sensor (LighTuning) |
+| USB | `1c7a:0570` serial `W70D612F` bcdDevice 10.41 |
+| Type | Press pad, five 114×57 frames per capture |
+| Stock driver | Fedora `egis0570` (swipe + NBIS) |
 
 ```
 scripts-fingerprint-fix/      install, uninstall, verify
