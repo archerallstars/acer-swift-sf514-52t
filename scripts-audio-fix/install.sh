@@ -13,9 +13,9 @@ set -euo pipefail
 # CONFIGURATION
 # =============================================================================
 
-# --- Repo layout. This directory is a sibling of ucm2/ and systemd/;
-#     other driver fixes on this device will live in their own
-#     scripts-* trees. ---
+# --- Repo layout. Audio scripts live in scripts-audio-fix/. Payload
+#     for this fix is still the repo-root ucm2/ and systemd/ trees.
+#     Other out-of-tree fixes use their own scripts-<area>-fix/. ---
 repository_audio_scripts_directory_name="scripts-audio-fix"
 
 # --- Overlayfs merge of distro ucm2 (lower) plus this machine's files ---

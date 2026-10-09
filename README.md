@@ -1,21 +1,58 @@
 # Acer Swift SF514-52T
 
-Device overlays for this Kaby Lake laptop on Fedora Atomic (Silverblue /
-ostree). The first overlay restores Intel AVS audio with the Realtek
-ALC255: speakers, headphone jack, 3.5 mm headset mic, internal DMIC, and
-HDMI / DisplayPort.
+Out-of-tree device fixes for this Kaby Lake laptop. Anything that is
+not yet in the upstream kernel or related projects lives here, as a
+**layer on the base system** — whether that base is a mutable root or
+an ostree/immutable image.
 
-[Kernel bug 219654](https://bugzilla.kernel.org/show_bug.cgi?id=219654) ·
-[alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571)
+Each fix is a `scripts-<area>-fix/` tree with its own install,
+uninstall, and verify. Installers write `/etc` and `/var` (systemd
+units, drop-ins, overlayfs). They do not require writing `/usr`, so
+the same layer works on Fedora Atomic and on a mutable distro.
 
-This tree does **not** wait for that UCM pull request to merge, and it
-does **not** set `obsolete_card_names=1`.
+## Fixes
+
+| Area | Tree | Status |
+| --- | --- | --- |
+| Audio (Intel AVS + Realtek ALC255) | [`scripts-audio-fix/`](scripts-audio-fix/) | shipped |
+| Fingerprint | `scripts-fingerprint-fix/` | in progress |
+
+New work goes in a new `scripts-<area>-fix/` directory. Do not dump
+unrelated fixes into `scripts-audio-fix/`.
+
+## How a fix layers
+
+- **Mutable or immutable.** Prefer `/etc` and `/var`. If the payload
+  normally lives under `/usr` (ALSA UCM, firmware, hwdb), overlay or
+  bind it from `/var` instead of copying into `/usr`.
+- **Own units.** `install.sh` enables what it copies.
+  `uninstall.sh` stops, disables, and deletes those units and files.
+- **Host, not the container.** Scripts re-exec via
+  `distrobox-host-exec` when started inside distrobox.
 
 ## Hardware
 
 | | |
 | --- | --- |
 | Machine | Acer Swift SF514-52T |
+| CPU / chipset | Kaby Lake, Sunrise Point-LP |
+
+Per-fix hardware (codec, sensor, PCI ID) is documented in that fix's
+section below.
+
+## Audio (`scripts-audio-fix`)
+
+Restores speakers, the headphone jack, the 3.5 mm headset mic, the
+internal DMIC, and HDMI / DisplayPort under `snd_soc_avs`.
+
+[Kernel bug 219654](https://bugzilla.kernel.org/show_bug.cgi?id=219654) ·
+[alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571)
+
+This overlay does not wait for that UCM pull request to merge, and it
+does not set `obsolete_card_names=1`.
+
+| | |
+| --- | --- |
 | Codec | Realtek ALC255 |
 | PCI audio | `8086:9d71` subsystem `1025:1225` |
 | Driver | `snd_soc_avs` (default `dsp_driver=0`) |
@@ -26,18 +63,21 @@ runs (boot log: `PCI SSID 1025:0000`), so pin `0x19` stays BIOS-disabled.
 Distro UCM still matches the old card long names, so PipeWire stays on
 ACP stereo-fallback.
 
-## Audio overlay
-
 ```
 scripts-audio-fix/     install, uninstall, verify, headset pin reconfig
 ucm2/                  AVS HD-Audio, AVS DMIC, AVS HDMI (new long names)
 systemd/               overlayfs mount, pin unit, PipeWire drop-ins
 ```
 
-Fedora ostree leaves `/usr` immutable. Install merges this repo over
+(`ucm2/` and `systemd/` at the repo root belong to this audio fix.
+Later fixes keep their payload inside their own `scripts-<area>-fix/`
+tree.)
+
+On an immutable `/usr`, install merges this UCM over
 `/usr/share/alsa/ucm2` with overlayfs under `/var/lib/alsa/` and sets
 `ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2-merged` on PipeWire and
-WirePlumber.
+WirePlumber. On a mutable root the same overlay is used, so the
+installer never writes `/usr`.
 
 HDMI `Number` values are 1, 2, 3. Distro `codecs/hda/hdmi.conf`
 programs `IEC958 Playback Switch` at `index = Number - 1`. Number 0
@@ -48,7 +88,7 @@ HiFi enables; `verify.sh` does the same before raw `arecord`.
 
 ### Install
 
-On the Fedora **host**. From distrobox the installer re-execs with
+On the **host**. From distrobox the installer re-execs with
 `distrobox-host-exec sudo`.
 
 ```bash
@@ -103,9 +143,10 @@ from `spa-acp-tool`.
 sudo ./scripts-audio-fix/uninstall.sh
 ```
 
-That stops and disables the units install enabled, unmounts the overlay,
-deletes the files this repo copied into `/etc` and `/var/lib/alsa`,
-reloads systemd, and restarts PipeWire.
+That stops and disables the units this fix enabled, unmounts the
+overlay, deletes the files it copied into `/etc` and `/var/lib/alsa`,
+reloads systemd, and restarts PipeWire. Other `scripts-<area>-fix`
+layers are left alone.
 
 ### Limits (audio v1)
 
@@ -121,10 +162,8 @@ reloads systemd, and restarts PipeWire.
 - `reconfig` fails if anything still holds `hw:HDAudio`. Install
   stops PipeWire first; the boot unit runs before `sound.target`.
 
-## Later work
+### Later (audio)
 
-- Other driver fixes for this chassis go in new `scripts-<area>/`
-  trees (see `AGENTS.md`).
 - Kernel: pass PCI SSID `1025:1225` into the Realtek quirk table, or
   add a DMI match for Swift SF514-52T.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
