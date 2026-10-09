@@ -35,11 +35,12 @@ unrelated fixes into `scripts-audio-fix/`.
 | | |
 | --- | --- |
 | Machine | Acer Swift SF514-52T |
-| CPU / chipset | Kaby Lake, Sunrise Point-LP |
+| CPU | Intel Core i5-8250U (Kaby Lake-U) |
+| Audio | Realtek ALC255 (`8086:9d71` subsystem `1025:1225`) |
 | Fingerprint | EgisTec `1c7a:0570` press pad (power button) |
 
-Per-fix hardware (codec, USB IDs, mixer names) is documented in that
-fix's section below.
+Driver quirks, mixer names, and USB serial are in each fix's section
+below.
 
 ## Audio (`scripts-audio-fix`)
 
