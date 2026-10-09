@@ -1,0 +1,18 @@
+[Unit]
+Description=ALSA UCM2 overlay for Acer Swift SF514-52T
+DefaultDependencies=no
+After=local-fs.target
+Before=sound.target multi-user.target
+ConditionPathIsDirectory=/usr/share/alsa/ucm2
+ConditionPathIsDirectory=/var/lib/alsa/ucm2-upper
+ConditionPathIsDirectory=/var/lib/alsa/ucm2-work
+ConditionPathIsDirectory=/var/lib/alsa/ucm2-merged
+
+[Mount]
+What=overlay
+Where=/var/lib/alsa/ucm2-merged
+Type=overlay
+Options=lowerdir=/usr/share/alsa/ucm2,upperdir=/var/lib/alsa/ucm2-upper,workdir=/var/lib/alsa/ucm2-work
+
+[Install]
+WantedBy=multi-user.target

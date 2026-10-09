@@ -1,0 +1,15 @@
+[Unit]
+Description=Acer Swift SF514-52T ALC255 headset-mic pin reconfig
+Documentation=https://bugzilla.kernel.org/show_bug.cgi?id=219654
+DefaultDependencies=no
+After=sysinit.target systemd-udev-settle.service
+Before=sound.target multi-user.target
+ConditionPathExists=/sys/class/sound
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/var/lib/alsa/sf514-audio/apply-headset-pins.sh
+
+[Install]
+WantedBy=multi-user.target

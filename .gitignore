@@ -1,0 +1,10 @@
+# Saved kernel.org bug thread. Local research only; never commit it.
+/219654*
+
+# Capture leftovers from scripts-audio-fix/verify.sh
+/tmp/
+*.wav
+
+# Editor / OS noise
+*~
+.DS_Store
