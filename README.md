@@ -37,7 +37,7 @@ unrelated fixes into `scripts-audio-fix/`.
 | Machine | Acer Swift SF514-52T |
 | CPU | Intel Core i5-8250U (Kaby Lake-U) |
 | Audio | Realtek ALC255 (`8086:9d71` subsystem `1025:1225`) |
-| Fingerprint | EgisTec `1c7a:0570` press pad (power button) |
+| Fingerprint | EgisTec `1c7a:0570` press pad (below the arrow keys) |
 
 Driver quirks, mixer names, and USB serial are in each fix's section
 below.
@@ -175,7 +175,7 @@ layers are left alone.
 
 ## Fingerprint (EgisTec 1c7a:0570)
 
-The power-button pad is USB `1c7a:0570` (serial `W70D612F`). Fedora
+The pad below the arrow keys is USB `1c7a:0570` (serial `W70D612F`). Fedora
 already ships libfprint's `egis0570` driver, so `fprintd-list` sees the
 device. That driver treats a **press** pad as a **swipe** and matches
 tiny 114×57 frames with NBIS/BOZORTH3. Enroll never becomes usable
@@ -190,7 +190,7 @@ does not touch the ALSA/UCM tree.
 | --- | --- |
 | Sensor | EgisTec Touch Fingerprint Sensor (LighTuning) |
 | USB | `1c7a:0570` serial `W70D612F` bcdDevice 10.41 |
-| Type | Press pad, five 114×57 frames per capture |
+| Type | Press pad below the arrow keys, five 114×57 frames per capture |
 | Stock driver | Fedora `egis0570` (swipe + NBIS) |
 
 ```

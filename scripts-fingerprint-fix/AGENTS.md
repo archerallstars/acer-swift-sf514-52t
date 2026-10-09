@@ -24,8 +24,9 @@ layering: root `AGENTS.md`.
 
 ## Hardware
 
-- Pad is USB `1c7a:0570` (this chassis serial `W70D612F`), press not
-  swipe. Stock Fedora `egis0570` enumerates it and still cannot enroll.
+- Pad is USB `1c7a:0570` (this chassis serial `W70D612F`), below the
+  arrow keys, press not swipe. Stock Fedora `egis0570` enumerates it
+  and still cannot enroll.
 - Bulk OUT `0x04`, bulk IN `0x83`, 32512-byte captures = five 114×57
   frames. Protocol: `fingerprint/protocol.md`.
 
