@@ -19,7 +19,7 @@ root `AGENTS.md`.
   enough for analog playback.
 - Move `ucm2/` or `systemd/` without updating
   `scripts-audio-fix/install.sh` and `uninstall.sh` in the same change.
-- Leave matching 51/52 WirePlumber fragments in the session user's
+- Leave matching 51-54 WirePlumber fragments in the session user's
   `~/.config/wireplumber/wireplumber.conf.d/` after install. Those
   stack with `/etc` and apply `Mult = 4.0` twice.
 - Touch fingerprint or other `scripts-<area>-fix` trees from an audio
@@ -44,22 +44,48 @@ root `AGENTS.md`.
   session user's home copies of the same names on install.
   `wpctl` remaining at 1.00 on this source is expected.
 
-## Headset pin
+## Headset mic (AVS)
 
-BIOS leaves pin `0x19` as `0x411111f0`. The boot unit writes
-`0x19 0x03a11130` and tries `modelname=headset-mode-no-hp-mic`, then
-`reconfig`. That must run while the analog PCM is closed
-(`Before=sound.target`; install stops PipeWire sockets first).
+BIOS leaves analog mic pins `0x19`/`0x1a` as `0x411111f0`. Autoconfig
+logs empty `inputs:` and the mixer has no `Capture Switch`. Generic
+HDA UCM therefore never includes `HiFi-mic.conf`. AVS topology still
+exposes analog capture as `pcmC*D0c` (`HDAudio Analog`).
+
+**Never write `hwC*D0/reconfig`.** On this ASoC-bound ALC255 that
+sysfs store NULL-derefs in `snd_hda_codec_reset` (`snd_hda_lock_devices`
+on a NULL card). SUSE 1213187 `model=1025:1330` applied on
+`snd-hda-intel`; it does not retask the parser here.
+
+The boot unit programs the live codec through `/dev/snd/hwC*D0`
+(HDA hwdep, `CAP_SYS_RAWIO`): D0 on pin `0x19`, mixers `0x22`/`0x23`,
+and ADCs `0x08`/`0x09`; `SET_CONFIG_DEFAULT` `0x03a11130` on `0x19`;
+pin `0x19` `SET_PIN_WIDGET_CONTROL 0x24` (IN + VREF_80) and Amp-In
+boost; unmute ADC mux index 1 on `0x22`/`0x23`; unmute ADCs
+`0x08`/`0x09`; `alc255_set_default_jack_type` (`0x45=0xd089`).
+A present Front Headphone Jack always gets CTIA (`0x45=0xd489`),
+the Acer 1213187 headset-mic mode. Immediate CTIA-vs-OMTP probes
+on this AVS codec return OMTP after a replug and kill capture.
+Headphone playback is ignored so PipeWire mixer changes cannot
+flip UAJ. Pin `0x21` is OUT-only. hwdep GET_PIN_SENSE stays 0;
+udev does not emit change events for the Front Headphone input
+switch. The unit is `Type=simple --watch`: it debounces that
+kcontrol and re-applies CTIA when coef `0x45` drifts, so a mic
+left plugged survives reboot. Analog ADCs unmute at payload
+`0x7027` (about +12 dB). WirePlumber 53/54 apply `S32LE` /
+`alsa.resolution_bits = 24` and linear `Mult = 4.0` on
+`~alsa_input.*avs_hdaudio.*Headset.*`. UCM
+`SectionDevice."Headset"` binds `hw:${CardId},0` with `JackControl
+"Front Headphone Jack"` and `CaptureFormat S32_LE`.
+
+Do not retask pin `0x21` as an ADC (no IN pincap). Analog headset
+capture is a CTIA TRRS (3-ring) mic on Headset Microphone. Real
+internal capture is AVS DMIC.
 
 The boot unit runs `/usr/bin/bash` with the pin script as
 its argument. The script lives under `/var/lib/alsa/`
 (`alsa_var_lib_t`). systemd (`init_t`) is denied execute on
 that type (status 203/EXEC). bash is `shell_exec_t` and
-reads the script as data.
-
-Writing `reconfig` tears down `hwC*D0`; the writer is often
-SIGKILL'd after the pin is stored. The script runs that write
-in a subshell and the unit sets `SuccessExitStatus=SIGKILL`.
+reads the script as data. Python 3 issues the hwdep ioctl.
 
 ## Install / uninstall / verify
 
@@ -71,21 +97,29 @@ in a subshell and the unit sets `SuccessExitStatus=SIGKILL`.
   overlayfs otherwise keeps empty nlink-0 dirs in the merge.
 - Relabel installed unit files with `restorecon`. `cp -a` from the
   user's home leaves `user_home_t`, and systemd cannot read that.
-- Install WirePlumber 51/52 under `/etc/wireplumber/wireplumber.conf.d/`
+- Install WirePlumber 51-54 under `/etc/wireplumber/wireplumber.conf.d/`
   and delete the session user's home copies of those filenames.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +
   `disable` the audio units, delete those unit files, drop-ins, and
-  WirePlumber 51/52 fragments under `/etc` and matching home copies
+  WirePlumber 51-54 fragments under `/etc` and matching home copies
   of those filenames, unmount the UCM overlay, reload systemd,
   restart the session PipeWire stack.
 - `verify.sh` must not treat `wpctl status` as a pass. Discover cards
   from `/proc/asound/cards`. Require HiFi from `spa-acp-tool` when the
-  overlay is mounted. Require the 51/52 fragments under
+  overlay is mounted. Require live pin `0x19` Pin-ctls `0x24` (VREF_80)
+  or `0x22` (VREF_50 leftover), analog capture PCM `pcm0c`, UCM
+  `Headset`, and the headset unit `--watch` poll.
+  Do not require analog `Capture Switch` (it never appears under AVS
+  on this BIOS). Require the 51-54 fragments under
   `/etc/wireplumber/wireplumber.conf.d/` (`Mult = 4.0`). A leftover
   home copy of those filenames is a fail. `wpctl` volume 1.00 on the
-  DMIC is expected.
+  DMIC is expected. Analog headset capture still needs a plugged jack
+  and Headset Microphone selected. A 3-ring CTIA mic can stay
+  plugged; verify does not treat an empty jack as a fail.
 
 ## Out of v1 unless the user asks
 
-Kernel quirk work: pass PCI SSID `1025:1225` into the Realtek table, or
-a DMI match for Swift SF514-52T.
+Kernel quirk work: pass the real PCI SSID `1025:1225` into the Realtek
+table as `ALC255_FIXUP_ACER_HEADSET_MIC` (AVS currently logs
+`1025:0000`), and make `snd_hda_codec_reset` safe on ASoC-bound
+codecs so sysfs reconfig can work.

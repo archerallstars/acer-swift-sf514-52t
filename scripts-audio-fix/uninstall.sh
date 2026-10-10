@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Remove the Acer Swift SF514-52T AVS audio overlay from Fedora Atomic.
 #
-# Stops the headset reconfig unit and the UCM overlay mount, deletes
+# Stops the headset-mic verb unit and the UCM overlay mount, deletes
 # the files this repo installed under /etc and /var (including the
-# WirePlumber DMIC 51/52 gain fragments), deletes matching home
-# copies of those 51/52 filenames, and restarts the session PipeWire
-# stack. Idempotent: a second run is a successful no-op aside from
-# the session audio restart. Must run as root on the host.
+# WirePlumber DMIC 51/52 and analog Headset 53/54 gain fragments
+# and the combo-jack udev rule), deletes matching home copies of
+# those 51-54 filenames, and
+# restarts the session PipeWire stack. Idempotent: a second run is a
+# successful no-op aside from the session audio restart. Must run as
+# root on the host.
 
 set -euo pipefail
 
@@ -30,16 +32,21 @@ installed_wireplumber_dropin_directory="/etc/systemd/user/wireplumber.service.d"
 installed_pipewire_dropin_path="/etc/systemd/user/pipewire.service.d/sf514-ucm.conf"
 installed_wireplumber_dropin_path="/etc/systemd/user/wireplumber.service.d/sf514-ucm.conf"
 installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
+installed_headset_udev_rule_path="/etc/udev/rules.d/70-sf514-alc255-headset.rules"
 
-# --- WirePlumber system conf.d fragments installed for AVS DMIC gain.
-#     Home copies of the same filenames (from the live Mult=4.0 test,
-#     or recreated after install) must be deleted too, or uninstall
-#     would leave the 4x capture filter in place. ---
+# --- WirePlumber system conf.d fragments installed for AVS DMIC
+#     (51/52) and analog Headset (53/54) gain. Home copies of the
+#     same filenames must be deleted too, or uninstall would leave
+#     the 4x capture filters in place. ---
 wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
 wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
+wireplumber_headset_soft_mixer_file_name="53-sf514-headset-soft-mixer.conf"
+wireplumber_headset_gain_file_name="54-sf514-headset-gain.conf"
 installed_wireplumber_conf_directory="/etc/wireplumber/wireplumber.conf.d"
 installed_wireplumber_dmic_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_soft_mixer_file_name}"
 installed_wireplumber_dmic_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_gain_file_name}"
+installed_wireplumber_headset_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_headset_soft_mixer_file_name}"
+installed_wireplumber_headset_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_headset_gain_file_name}"
 session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.conf.d"
 
 # --- systemd unit names ---
@@ -81,7 +88,7 @@ log_info() {
 # =============================================================================
 
 # Reverse install.sh: stop user audio, disable units, unmount the
-# overlay, delete installed files and WirePlumber 51/52 fragments
+# overlay, delete installed files and WirePlumber 51-54 fragments
 # (system and session-home copies), reload systemd, start user audio.
 # Exits 0 on success, 1 on failure.
 main() {
@@ -97,9 +104,10 @@ main() {
 	host_enqueue_empty_directory_cleanup
 	file_io_queue_drain
 	host_reload_systemd_daemon
+	host_reload_udev_rules
 	session_reload_user_systemd
 	session_start_user_audio
-	log_info "Uninstall complete. WirePlumber DMIC 51/52 fragments are gone from ${installed_wireplumber_conf_directory} and the session home directory."
+	log_info "Uninstall complete. WirePlumber 51-54 fragments are gone from ${installed_wireplumber_conf_directory} and the session home directory."
 	log_info "Log out and back in if CLI tools still export ALSA_CONFIG_UCM2."
 }
 
@@ -248,13 +256,17 @@ host_enqueue_empty_directory_cleanup() {
 }
 
 # Queue deletion of every file and directory install.sh created under
-# /etc and /var, including the WirePlumber 51/52 DMIC fragments.
+# /etc and /var, including the WirePlumber 51-54 gain fragments.
 host_enqueue_uninstall_removes() {
 	file_io_queue_enqueue \
 		"${installed_headset_unit_path}" \
 		"${installed_headset_unit_path}" \
 		"remove-path"
 	file_io_queue_enqueue \
+		"${installed_headset_udev_rule_path}" \
+		"${installed_headset_udev_rule_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
 		"${installed_overlay_mount_unit_path}" \
 		"${installed_overlay_mount_unit_path}" \
 		"remove-path"
@@ -279,6 +291,14 @@ host_enqueue_uninstall_removes() {
 		"${installed_wireplumber_dmic_gain_path}" \
 		"remove-path"
 	file_io_queue_enqueue \
+		"${installed_wireplumber_headset_soft_mixer_path}" \
+		"${installed_wireplumber_headset_soft_mixer_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_headset_gain_path}" \
+		"${installed_wireplumber_headset_gain_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
 		"${installed_audio_directory}" \
 		"${installed_audio_directory}" \
 		"remove-path"
@@ -298,6 +318,22 @@ host_enqueue_uninstall_removes() {
 		"${legacy_ucm2_merged_directory}" \
 		"${legacy_ucm2_merged_directory}" \
 		"remove-path"
+}
+
+# Reload udev so the combo-jack headset-mic rule is dropped.
+host_reload_udev_rules() {
+	if command -v udevadm >/dev/null 2>&1; then
+		if udevadm control --reload-rules; then
+			log_info "Reloaded udev rules"
+			return 0  # udev no longer references the deleted rule
+		else
+			log_error "udevadm control --reload-rules failed"
+			exit 1
+		fi
+	else
+		log_info "udevadm not installed; skip udev reload"
+		return 0  # nothing to reload
+	fi
 }
 
 # Reload systemd so removed unit files disappear from the unit list.
@@ -372,19 +408,23 @@ path_resolve_session_user_name() {
 # SESSION AUDIO HELPERS
 # =============================================================================
 
-# Queue deletion of the session user's home copies of the 51 and 52
+# Queue deletion of the session user's home copies of the 51-54
 # WirePlumber fragments. Install already removes those copies after
 # writing the /etc files. Uninstall still deletes them so a leftover
 # experimental copy cannot keep Mult=4.0 after this layer is gone.
 session_enqueue_home_dmic_fragment_removes() {
 	local session_home_dmic_soft_mixer_path
 	local session_home_dmic_gain_path
+	local session_home_headset_soft_mixer_path
+	local session_home_headset_gain_path
 	if [[ -z "${resolved_session_user_home_directory}" ]]; then
-		log_info "No session home directory; skip removing home WirePlumber DMIC fragments"
+		log_info "No session home directory; skip removing home WirePlumber fragments"
 		return 0  # no home copies to delete
 	else
 		session_home_dmic_soft_mixer_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_soft_mixer_file_name}"
 		session_home_dmic_gain_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_gain_file_name}"
+		session_home_headset_soft_mixer_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_headset_soft_mixer_file_name}"
+		session_home_headset_gain_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_headset_gain_file_name}"
 		file_io_queue_enqueue \
 			"${session_home_dmic_soft_mixer_path}" \
 			"${session_home_dmic_soft_mixer_path}" \
@@ -393,7 +433,15 @@ session_enqueue_home_dmic_fragment_removes() {
 			"${session_home_dmic_gain_path}" \
 			"${session_home_dmic_gain_path}" \
 			"remove-path"
-		log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name} and ${wireplumber_dmic_gain_file_name}"
+		file_io_queue_enqueue \
+			"${session_home_headset_soft_mixer_path}" \
+			"${session_home_headset_soft_mixer_path}" \
+			"remove-path"
+		file_io_queue_enqueue \
+			"${session_home_headset_gain_path}" \
+			"${session_home_headset_gain_path}" \
+			"remove-path"
+		log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name}, ${wireplumber_dmic_gain_file_name}, ${wireplumber_headset_soft_mixer_file_name}, and ${wireplumber_headset_gain_file_name}"
 		return 0  # home copies queued for deletion
 	fi
 }

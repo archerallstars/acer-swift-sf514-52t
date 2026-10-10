@@ -2,12 +2,12 @@
 # Install the Acer Swift SF514-52T AVS audio overlay on Fedora Atomic.
 #
 # Copies this repo's UCM tree into an overlayfs upper dir under /var,
-# installs the headset-mic pin reconfig unit, points PipeWire /
-# WirePlumber at the merged UCM tree via ALSA_CONFIG_UCM2, and
-# installs WirePlumber conf.d fragments that apply 4x linear capture
-# gain on the AVS DMIC. /usr is never modified. Must run as root on
-# the host (re-execs via distrobox-host-exec when started inside a
-# container).
+# installs the analog headset-mic verb unit (polls Front Headphone Jack),
+# points PipeWire / WirePlumber at the merged UCM tree via
+# ALSA_CONFIG_UCM2, and installs WirePlumber conf.d fragments that
+# apply 4x linear capture gain on the AVS DMIC and analog Headset.
+# /usr is never modified. Must run as root on the host (re-execs via
+# distrobox-host-exec when started inside a container).
 
 set -euo pipefail
 
@@ -17,8 +17,9 @@ set -euo pipefail
 
 # --- Repo layout. Audio scripts live in scripts-audio-fix/. Payload
 #     for this fix is the repo-root ucm2/ and systemd/ trees, plus
-#     scripts-audio-fix/wireplumber/ for DMIC gain fragments. Other
-#     out-of-tree fixes use their own scripts-<area>-fix/. ---
+#     scripts-audio-fix/wireplumber/ for DMIC and analog Headset
+#     gain fragments. Other out-of-tree fixes use their own
+#     scripts-<area>-fix/. ---
 repository_audio_scripts_directory_name="scripts-audio-fix"
 
 # --- Overlayfs merge of distro ucm2 (lower) plus this machine's files.
@@ -34,7 +35,7 @@ legacy_ucm2_upper_directory="/var/lib/alsa/ucm2-upper"
 legacy_ucm2_work_directory="/var/lib/alsa/ucm2-work"
 legacy_ucm2_merged_directory="/var/lib/alsa/ucm2-merged"
 
-# --- Installed copies of this repo's units and the pin-reconfig script ---
+# --- Installed copies of this repo's units and the headset-mic verb script ---
 installed_audio_directory="/var/lib/alsa/sf514-audio"
 installed_headset_script_path="/var/lib/alsa/sf514-audio/apply-headset-pins.sh"
 installed_headset_unit_path="/etc/systemd/system/sf514-alc255-headset.service"
@@ -45,20 +46,24 @@ installed_environment_dropin_directory="/etc/environment.d"
 installed_pipewire_dropin_path="/etc/systemd/user/pipewire.service.d/sf514-ucm.conf"
 installed_wireplumber_dropin_path="/etc/systemd/user/wireplumber.service.d/sf514-ucm.conf"
 installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
+installed_headset_udev_rule_path="/etc/udev/rules.d/70-sf514-alc255-headset.rules"
 
-# --- WirePlumber system conf.d fragments for AVS DMIC extra
-#     capture gain. 51 turns on api.alsa.soft-mixer. 52 applies
-#     a builtin linear filter with Mult=4.0 (about +12 dB). Both
-#     match alsa_input.*avs_dmic.* and were proven on this
-#     chassis. Home copies of the same filenames must be removed
-#     on install so /etc and ~/.config do not both apply
-#     the multiplier. ---
+# --- WirePlumber system conf.d fragments for extra capture gain.
+#     51/52 are AVS DMIC (alsa_input.*avs_dmic.*, Mult=4.0). 53/54
+#     are analog Headset (alsa_input.*avs_hdaudio.*Headset.*,
+#     S32LE / 24-bit plus Mult=4.0). Home copies of the same
+#     filenames must be removed on install so /etc and ~/.config
+#     do not both apply the multiplier. ---
 repository_wireplumber_conf_directory_name="wireplumber"
 wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
 wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
+wireplumber_headset_soft_mixer_file_name="53-sf514-headset-soft-mixer.conf"
+wireplumber_headset_gain_file_name="54-sf514-headset-gain.conf"
 installed_wireplumber_conf_directory="/etc/wireplumber/wireplumber.conf.d"
 installed_wireplumber_dmic_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_soft_mixer_file_name}"
 installed_wireplumber_dmic_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_gain_file_name}"
+installed_wireplumber_headset_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_headset_soft_mixer_file_name}"
+installed_wireplumber_headset_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_headset_gain_file_name}"
 session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.conf.d"
 
 # --- systemd unit names (must match the installed file names) ---
@@ -66,7 +71,8 @@ overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
 headset_unit_name="sf514-alc255-headset.service"
 
 # --- User-session PipeWire stack; sockets are stopped so they cannot
-#     immediately restart the services while the codec reconfig runs. ---
+#     immediately restart the services while headset verbs run and UCM
+#     is reloaded. ---
 user_audio_stop_unit_names=(
 	pipewire.socket
 	pipewire-pulse.socket
@@ -101,9 +107,9 @@ log_info() {
 # =============================================================================
 
 # Install overlay dirs, UCM files, systemd units, session drop-ins,
-# and WirePlumber DMIC gain fragments, then reconfig the ALC255
-# headset pin while the user audio stack is stopped. Exits 0 on
-# success, 1 on failure.
+# and WirePlumber DMIC plus analog-headset gain fragments, then run
+# the ALC255 analog headset-mic hwdep verbs. Exits 0 on success, 1
+# on failure.
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
@@ -124,20 +130,21 @@ main() {
 	session_enqueue_home_dmic_fragment_removes
 	file_io_queue_drain
 	host_reload_systemd_daemon
+	host_reload_udev_rules
 	host_enable_overlay_mount
 	host_enable_headset_unit
 	session_reload_user_systemd
 	session_stop_user_audio
+	session_start_user_audio
 	if host_restart_headset_unit; then
 		:
 	else
-		session_start_user_audio
 		exit 1
 	fi
-	session_start_user_audio
 	log_info "Install complete. Overlay is at ${ucm2_merged_directory}."
-	log_info "WirePlumber DMIC gain fragments are in ${installed_wireplumber_conf_directory} (Mult=4.0)."
-	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and DMIC."
+	log_info "WirePlumber DMIC 51/52 and analog Headset 53/54 gain fragments are in ${installed_wireplumber_conf_directory} (Mult=4.0)."
+	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and capture."
+	log_info "Analog headset capture needs a plugged jack (Front Headphone on) and Headset Microphone as the input. A 3-ring CTIA mic can stay plugged across reboot; the watch unit keeps CTIA applied."
 }
 
 # =============================================================================
@@ -263,7 +270,7 @@ file_io_queue_enqueue() {
 # =============================================================================
 
 # Queue creation of the overlayfs upper, work, and merged directories,
-# the directory that holds the installed pin-reconfig script, session
+# the directory that holds the installed headset-mic verb script, session
 # drop-in directories, and /etc/wireplumber/wireplumber.conf.d.
 directory_create_overlay_paths() {
 	file_io_queue_enqueue \
@@ -341,7 +348,7 @@ directory_reset_known_overlay_files() {
 # HOST SYSTEMD HELPERS
 # =============================================================================
 
-# Enable the headset pin unit so it runs on every boot before
+# Enable the headset verb unit so it runs on every boot before
 # sound.target. Start/restart happens later, after PipeWire is stopped.
 host_enable_headset_unit() {
 	if systemctl enable "${headset_unit_name}"; then
@@ -371,9 +378,10 @@ host_enable_overlay_mount() {
 	fi
 }
 
-# Queue copies of the UCM tree, pin script, mount unit, headset unit,
-# PipeWire/WirePlumber drop-ins, environment.d file, and WirePlumber
-# DMIC soft-mixer plus linear-gain fragments.
+# Queue copies of the UCM tree, headset-mic verb script, mount unit,
+# headset unit, leftover combo-jack udev rule removal, PipeWire/WirePlumber drop-ins,
+# environment.d file, and WirePlumber DMIC 51/52 plus analog Headset
+# 53/54 gain fragments.
 host_enqueue_install_copies() {
 	file_io_queue_enqueue \
 		"${repository_root_directory}/ucm2" \
@@ -411,6 +419,18 @@ host_enqueue_install_copies() {
 		"${repository_root_directory}/${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_gain_file_name}" \
 		"${installed_wireplumber_dmic_gain_path}" \
 		"copy-file"
+	file_io_queue_enqueue \
+		"${repository_root_directory}/${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_headset_soft_mixer_file_name}" \
+		"${installed_wireplumber_headset_soft_mixer_path}" \
+		"copy-file"
+	file_io_queue_enqueue \
+		"${repository_root_directory}/${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_headset_gain_file_name}" \
+		"${installed_wireplumber_headset_gain_path}" \
+		"copy-file"
+	file_io_queue_enqueue \
+		"${installed_headset_udev_rule_path}" \
+		"${installed_headset_udev_rule_path}" \
+		"remove-path"
 }
 
 # Relabel installed units and scripts so systemd can read them. Copies
@@ -460,16 +480,29 @@ host_reload_systemd_daemon() {
 	fi
 }
 
-# Restart the headset unit so the pin script runs even on reinstall
-# (RemainAfterExit would otherwise make a plain start a no-op). Must
-# run while the analog PCM is closed. Returns 1 on failure so main can
-# start the user audio stack again before exiting.
+# Reload udev after deleting a leftover combo-jack headset-mic rule.
+host_reload_udev_rules() {
+	if command -v udevadm >/dev/null 2>&1; then
+		if udevadm control --reload-rules; then
+			log_info "Reloaded udev rules"
+		else
+			log_error "udevadm control --reload-rules failed"
+			exit 1
+		fi
+	else
+		log_info "udevadm not installed; skip udev reload"
+	fi
+}
+
+# Restart the headset unit so the verb script runs even on reinstall.
+# Returns 1 on failure so main can start the user audio stack again
+# before exiting.
 host_restart_headset_unit() {
 	if systemctl restart "${headset_unit_name}"; then
-		log_info "Applied ALC255 headset pin reconfig"
-		return 0  # codec reconfig succeeded
+		log_info "Applied ALC255 analog headset-mic hwdep verbs (pin 0x19 IN+VREF_80)"
+		return 0  # headset-mic verbs succeeded
 	else
-		log_error "Headset reconfig failed (see unit status below)"
+		log_error "Headset-mic verb unit failed (see unit status below)"
 		systemctl status "${headset_unit_name}" --no-pager --full || true
 		journalctl -u "${headset_unit_name}" -n 20 --no-pager || true
 		return 1  # caller restores PipeWire then exits
@@ -549,6 +582,8 @@ host_verify_repository_files() {
 		"systemd/50-sf514-alsa-ucm.conf"
 		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_soft_mixer_file_name}"
 		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_gain_file_name}"
+		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_headset_soft_mixer_file_name}"
+		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_headset_gain_file_name}"
 	)
 	local relative_path
 	local verification_process_ids=()
@@ -637,7 +672,7 @@ path_resolve_repository_root() {
 }
 
 # Set resolved_session_user_name to the logged-in user whose PipeWire
-# stack we must stop around codec reconfig. Prefers SUDO_USER.
+# stack we must stop around headset-mic verbs. Prefers SUDO_USER.
 path_resolve_session_user_name() {
 	if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
 		resolved_session_user_name="${SUDO_USER}"
@@ -652,15 +687,17 @@ path_resolve_session_user_name() {
 # SESSION AUDIO HELPERS
 # =============================================================================
 
-# Queue deletion of the session user's home copies of the 51 and 52
+# Queue deletion of the session user's home copies of the 51-54
 # WirePlumber fragments. /etc and ~/.config fragments both apply, so
 # leaving the home copies would run Mult=4.0 twice (16x).
 session_enqueue_home_dmic_fragment_removes() {
 	local session_user_home_directory=""
 	local session_home_dmic_soft_mixer_path
 	local session_home_dmic_gain_path
+	local session_home_headset_soft_mixer_path
+	local session_home_headset_gain_path
 	if [[ -z "${resolved_session_user_name}" ]]; then
-		log_info "No session user; skip removing home WirePlumber DMIC fragments"
+		log_info "No session user; skip removing home WirePlumber fragments"
 		return 0  # no home directory to clean
 	else
 		if command -v getent >/dev/null 2>&1; then
@@ -674,6 +711,8 @@ session_enqueue_home_dmic_fragment_removes() {
 		else
 			session_home_dmic_soft_mixer_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_soft_mixer_file_name}"
 			session_home_dmic_gain_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_gain_file_name}"
+			session_home_headset_soft_mixer_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_headset_soft_mixer_file_name}"
+			session_home_headset_gain_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_headset_gain_file_name}"
 			file_io_queue_enqueue \
 				"${session_home_dmic_soft_mixer_path}" \
 				"${session_home_dmic_soft_mixer_path}" \
@@ -682,7 +721,15 @@ session_enqueue_home_dmic_fragment_removes() {
 				"${session_home_dmic_gain_path}" \
 				"${session_home_dmic_gain_path}" \
 				"remove-path"
-			log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name} and ${wireplumber_dmic_gain_file_name} so the multiplier applies once"
+			file_io_queue_enqueue \
+				"${session_home_headset_soft_mixer_path}" \
+				"${session_home_headset_soft_mixer_path}" \
+				"remove-path"
+			file_io_queue_enqueue \
+				"${session_home_headset_gain_path}" \
+				"${session_home_headset_gain_path}" \
+				"remove-path"
+			log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name}, ${wireplumber_dmic_gain_file_name}, ${wireplumber_headset_soft_mixer_file_name}, and ${wireplumber_headset_gain_file_name} so each multiplier applies once"
 			return 0  # home copies queued for deletion
 		fi
 	fi
@@ -720,11 +767,11 @@ session_start_user_audio() {
 	fi
 }
 
-# Stop the session owner's PipeWire stack, including sockets, so the
-# analog PCM is closed before codec reconfig.
+# Stop the session owner's PipeWire stack, including sockets, so UCM
+# reloads on the next start. Headset-mic verbs run after that start.
 session_stop_user_audio() {
 	if [[ -z "${resolved_session_user_name}" ]]; then
-		log_info "No session user; stop PipeWire yourself before headset reconfig"
+		log_info "No session user; stop PipeWire yourself before headset-mic verbs"
 		return 0  # cannot stop a session we cannot see
 	else
 		if session_user_systemctl stop "${user_audio_stop_unit_names[@]}"; then

@@ -1,5 +1,7 @@
-# Saved kernel.org bug thread. Local research only; never commit it.
+# Saved kernel.org and SUSE bug threads. Local research only; never
+# commit them.
 /219654*
+/1213187*
 
 # Capture leftovers from scripts-audio-fix/verify.sh
 /tmp/

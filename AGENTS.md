@@ -22,8 +22,9 @@ an ostree/immutable image. One installer must work on both.
 Do not revive a generic `scripts/` directory. Do not put a second
 subsystem's files inside `scripts-audio-fix/`.
 
-Keep the 219654 kernel.org HTML dump and its `_files/` tree **out of
-git**. They are local research only (see `.gitignore`).
+Keep the 219654 kernel.org HTML dump, the 1213187 SUSE HTML dump, and
+their `_files/` trees **out of git**. They are local research only
+(see `.gitignore`).
 
 ## Layering (every fix)
 

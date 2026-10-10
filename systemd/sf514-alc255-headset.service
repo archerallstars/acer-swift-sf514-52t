@@ -1,21 +1,23 @@
 [Unit]
-Description=Acer Swift SF514-52T ALC255 headset-mic pin reconfig
+Description=Acer Swift SF514-52T ALC255 analog headset-mic verbs
 Documentation=https://bugzilla.kernel.org/show_bug.cgi?id=219654
-DefaultDependencies=no
-After=sysinit.target systemd-udev-settle.service
-Before=sound.target multi-user.target
+Documentation=https://bugzilla.suse.com/show_bug.cgi?id=1213187
+After=sound.target
+Wants=sound.target
 ConditionPathExists=/sys/class/sound
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
+Restart=on-failure
+RestartSec=2
 # init_t cannot execute a file labeled alsa_var_lib_t (Permission
 # denied, status 203/EXEC). /usr/bin/bash is shell_exec_t and reads
-# the script as data.
-ExecStart=/usr/bin/bash /var/lib/alsa/sf514-audio/apply-headset-pins.sh
-# Writing hwC*D0/reconfig tears down that sysfs node. The writer is
-# often SIGKILL'd after the kernel has already applied the pin.
-SuccessExitStatus=SIGKILL
+# the script as data. --watch polls Front Headphone Jack, debounces
+# plug events, and keeps CTIA applied while the jack is present.
+ExecStart=/usr/bin/bash /var/lib/alsa/sf514-audio/apply-headset-pins.sh --watch
+# Do not write hwC*D0/reconfig. On this ASoC/AVS codec that sysfs
+# store NULL-derefs in snd_hda_codec_reset. The script uses hwdep
+# verbs only.
 
 [Install]
 WantedBy=multi-user.target

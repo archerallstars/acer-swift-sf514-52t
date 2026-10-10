@@ -48,6 +48,7 @@ Restores speakers, the headphone jack, the 3.5 mm headset mic, the
 internal DMIC, and HDMI / DisplayPort under `snd_soc_avs`.
 
 [Kernel bug 219654](https://bugzilla.kernel.org/show_bug.cgi?id=219654) ·
+[SUSE bug 1213187](https://bugzilla.suse.com/show_bug.cgi?id=1213187) ·
 [alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571)
 
 This overlay does not wait for that UCM pull request to merge, and it
@@ -60,16 +61,17 @@ does not set `obsolete_card_names=1`.
 | Driver | `snd_soc_avs` (default `dsp_driver=0`) |
 | Cards | `AVS PROBE`, `AVS HD-Audio`, `AVS DMIC`, `AVS HDMI` |
 
-Under AVS the Realtek quirk `ALC255_FIXUP_ACER_HEADSET_DMIC` never
-runs (boot log: `PCI SSID 1025:0000`), so pin `0x19` stays BIOS-disabled.
-Distro UCM still matches the old card long names, so PipeWire stays on
-ACP stereo-fallback.
+Under AVS the Realtek quirk never runs (boot log: `PCI SSID 1025:0000`),
+so analog mic pins stay BIOS N/A. Distro UCM still matches the old
+card long names, so PipeWire stays on ACP stereo-fallback. Analog
+headset capture is HDA hwdep verbs plus UCM `Headset`; live findings
+for the 3.5 mm plug are in [Analog plugin mic](#analog-plugin-mic-35-mm).
 
 ```
-scripts-audio-fix/              install, uninstall, verify, headset pin reconfig
-scripts-audio-fix/wireplumber/  51 soft-mixer + 52 linear Mult=4.0 on AVS DMIC
+scripts-audio-fix/              install, uninstall, verify, headset-mic hwdep verbs
+scripts-audio-fix/wireplumber/  51/52 AVS DMIC + 53/54 analog Headset (Mult=4.0)
 ucm2/                          AVS HD-Audio, AVS DMIC, AVS HDMI (new long names)
-systemd/                       overlayfs mount, pin unit, PipeWire drop-ins
+systemd/                       overlayfs mount, headset-mic verb unit, PipeWire drop-ins
 ```
 
 (`ucm2/` and `systemd/` at the repo root belong to this audio fix.
@@ -109,20 +111,26 @@ Install will:
 
 1. Create `/var/lib/alsa/ucm2/{upper,work,merged}` and copy `ucm2/`
    into the upper dir (conf.d symlinks preserved).
-2. Copy WirePlumber 51/52 fragments to
+2. Copy WirePlumber 51-54 fragments to
    `/etc/wireplumber/wireplumber.conf.d/` (`api.alsa.soft-mixer` and
-   linear `Mult = 4.0`) and remove the session user's home copies of
-   those same filenames so the gain is applied once.
-3. Enable the overlay mount and the headset pin unit.
+   linear `Mult = 4.0` on DMIC and analog Headset) and remove the
+   session user's home copies of those same filenames so the gain is
+   applied once.
+3. Enable the overlay mount and the headset-mic verb unit.
 4. Stop the session PipeWire stack (including sockets) so the analog
    PCM is closed.
-5. Reconfig ALC255 pin `0x19` to `0x03a11130`.
+5. Run ALC255 hwdep verbs: D0 on the analog path, pin `0x19`
+   IN+VREF_80, unmute analog ADC path at +12 dB, headset pin
+   default, then CTIA if Front Headphone Jack is on. Never write
+   sysfs `reconfig` (oopses on AVS). The unit stays running,
+   debounces the jack, and keeps CTIA applied while the mic stays
+   plugged (including across reboot).
 6. Restart PipeWire / WirePlumber with `ALSA_CONFIG_UCM2` set.
 
 You do not need `options snd_soc_avs obsolete_card_names=1`.
 
 Unit files are copied with `install` and relabeled with `restorecon`
-so Fedora Enforcing can load them. The headset unit runs the pin
+so Fedora Enforcing can load them. The headset unit runs the verb
 script through `/usr/bin/bash` because systemd cannot execute a file
 labeled `alsa_var_lib_t`. A re-run of install.sh also removes leftover
 `/var/lib/alsa/ucm2-{upper,work,merged}` directories from the first
@@ -138,18 +146,27 @@ After a successful install:
 
 - Overlay readable at `/var/lib/alsa/ucm2/merged`
 - Long names `AVS HD-Audio`, `AVS DMIC`, `AVS HDMI` (not `hdaudioB0D2`)
-- Pin `0x19` = `0x03a11130` on the ALC255 codec sysfs node
+- Node `0x19` Pin-ctls `0x24` (IN VREF_80) on the ALC255 codec dump
+- Analog capture PCM `pcm0c` on `AVS HD-Audio`
+- UCM `Headset` device (spa-acp-tool lists it under HiFi)
+- Headset unit `ExecStart` includes `--watch` (debounces Front
+  Headphone Jack and keeps CTIA applied)
 - `spa-acp-tool -c <n> list-profiles` shows **HiFi** on HD-Audio and
   DMIC, not only `stereo-fallback`
 - A non-silent WAV from
   `arecord -D hw:DMIC,0 -r 48000 -c 2 -f S16_LE -d 3`
 - `/etc/wireplumber/wireplumber.conf.d/51-sf514-dmic-soft-mixer.conf`
-  and `52-sf514-dmic-gain.conf` present (`Mult = 4.0`)
-- no home copies of those 51/52 filenames (they would stack with `/etc`)
+  through `54-sf514-headset-gain.conf` present (`Mult = 4.0`)
+- no home copies of those 51-54 filenames (they would stack with `/etc`)
 
 Then, as a user: default sink is analog Speaker; plugging headphones
-switches port; a CTIA headset exposes analog Mic; HDMI/DP playback
-reaches the display.
+switches port. Analog capture is S32_LE. HDMI/DP playback reaches
+the display.
+
+- A **3-ring CTIA mic** can stay plugged all the time. Select
+  **Headset Microphone** as the input. The watch unit applies CTIA
+  at boot and after a plug, and re-applies it if the codec drifts.
+- The real internal mic is AVS DMIC.
 
 Kernel lines `Endpoint format configuration not found` during ACP probe
 are expected.
@@ -168,28 +185,126 @@ sudo ./scripts-audio-fix/uninstall.sh
 
 That stops and disables the units this fix enabled, unmounts the
 overlay, deletes the files it copied into `/etc` and `/var/lib/alsa`
-(including the WirePlumber 51/52 DMIC fragments), deletes matching
-home copies of those 51/52 filenames, reloads systemd, and restarts
-PipeWire. Other `scripts-<area>-fix` layers are left alone.
+(including the WirePlumber 51-54 gain fragments and a leftover
+combo-jack udev rule), deletes matching home copies of those 51-54
+filenames, reloads systemd, and restarts PipeWire. Other
+`scripts-<area>-fix` layers are left alone.
+
+### Analog plugin mic (3.5 mm)
+
+The combo jack on this Swift is a **CTIA TRRS (3-ring)** headset
+mic. That is the plug that captured on SUSE bug 1213187 under
+`snd-hda-intel` (`model=1025:1330`), and it is the plug that
+captures here under `snd_soc_avs`. Leave it inserted; the watch
+unit keeps the codec in CTIA across reboot and session audio
+restarts. In GNOME, select **Headset Microphone**.
+
+A 2-ring (TRS) plug did not capture on this AVS path. Headphones
+(playback only) already work with the stock mixer.
+
+#### Why the kernel quirk never runs
+
+AVS logs PCI SSID `1025:0000`. The real subsystem is `1025:1225`.
+BIOS leaves pins `0x19` / `0x1a` as `0x411111f0`, autoconfig has
+empty `inputs:`, and there is no analog `Capture Switch`. Generic
+HDA UCM therefore never ships a mic device. AVS topology still
+exposes analog capture as `pcmC*D0c` (`HDAudio Analog`).
+
+Writing `hwC*D0/reconfig` NULL-derefs in `snd_hda_codec_reset`
+(`snd_hda_lock_devices` on a NULL card). This overlay never
+writes that sysfs file. It programs the live codec through
+`/dev/snd/hwC*D0` (`SNDRV_HDA_IOCTL_VERB_WRITE`).
+
+#### Widget map (ALC255)
+
+| Node | Role on this chassis |
+| --- | --- |
+| `0x19` | Combo-jack headset mic. Pin default `0x03a11130`. Pin-ctls `0x24` (IN + VREF_80). Amp-In max `0x7003`. |
+| `0x1a` | Second analog mic pin, still BIOS N/A. Unused. |
+| `0x21` | Headphone out. OUT-only pincap; it cannot be an ADC. |
+| `0x22` / `0x23` | ADC muxes. Connection index 1 is pin `0x19`. |
+| `0x08` / `0x09` | Analog ADCs that feed `HDAudio Analog`. Amp-In ofs `0x17` is 0 dB (0.75 dB/step). |
+| `0x20` / `0x57` | Vendor / COEFEX. Universal Audio Jack lives here. |
+
+#### Jack presence
+
+hwdep `GET_PIN_SENSE` stays 0 with a plug in. The live control is:
+
+```bash
+amixer -c N cget iface=CARD,name='Front Headphone Jack'
+```
+
+`values=on` means inserted, `values=off` means empty. udev does
+not emit `ACTION==change` for that switch, so a oneshot unit
+never sees a replug. `sf514-alc255-headset.service` is
+`Type=simple` with `--watch`: 0.5 s poll, three matching polls
+(~1.5 s) before UAJ follows a plug or unplug.
+
+#### Universal Audio Jack (the load-bearing finding)
+
+Working capture is **always CTIA**. Vendor coefficient `0x45`
+must stay `0xd489` while the jack is present.
+
+| State | `0x45` | `0x1b` | COEFEX `0x57/0x03` | MIC2 Vref `0x06` |
+| --- | --- | --- | --- | --- |
+| Unplugged | `0xd089` | `0x0c0b` | `0x8aa6` | `0x6104` (gated) |
+| CTIA (3-ring) | `0xd489` | `0x0c2b` | `0x8ea6` | `0x6100` (ungated) |
+
+The kernel ALC255 type probe (`0x45=0xd089`, `0x49=0x0149`, 300 ms,
+then `(0x46 & 0x0070) == 0x0070` for CTIA else OMTP) is unstable
+on this chassis after insert. Live replugs of the proven 3-ring
+mic returned `0x46=0x14` and `0x46=0x54` (OMTP). Capture went
+silent.
+
+Using Headphone playback on/off as a TRS vs TRRS hint also
+failed. Install with the 3-ring already in applied mic-in
+because Headphone was still off. Capture started only after
+PipeWire turned Headphone on and CTIA was applied. Later
+replugs stayed on the OMTP path.
+
+So a present Front Headphone Jack always gets the CTIA sequence
+above. Headphone playback is ignored. The type probe is not
+used. `--watch` re-applies CTIA if `0x45` drifts (PipeWire
+start, reboot with the mic already in).
+
+#### Format and volume
+
+Analog PCM is 24-bit left-justified in `S32_LE`. Opening it as
+`S16_LE` looks empty. UCM `SectionDevice."Headset"` binds
+`hw:${CardId},0` with `CaptureFormat S32_LE` and `JackControl
+"Front Headphone Jack"`.
+
+Usable GNOME meter on this electret:
+
+- ADC unmute payload `0x7027` (about +12 dB above the 0 dB
+  offset `0x17`)
+- WirePlumber 53/54 on `~alsa_input.*avs_hdaudio.*Headset.*`:
+  `audio.format = "S32LE"`, `alsa.resolution_bits = 24`,
+  `api.alsa.soft-mixer = true`, linear `Mult = 4.0`
+
+`wpctl` remaining at 1.00 on this source is expected; the boost
+is inside the node. The node name looks like
+`alsa_input.platform-avs_hdaudio.*.HiFi__Headset__source`.
 
 ### Limits (audio v1)
 
 - Three ALSA cards, three HiFi profiles. No combined “one logical
   card” UCM (the merge blocker on PR 571).
 - Generic AVS topology (`hda-generic-tplg.bin`). No custom firmware.
-- Headset mic is a userspace reconfig. If
-  `headset-mode-no-hp-mic` breaks headphone playback, drop the
-  `modelname` write in `scripts-audio-fix/apply-headset-pins.sh` and
-  keep the pin default.
+- Headset mic is hwdep verbs on pin `0x19`, not sysfs `reconfig`
+  (that oopses on this AVS codec).
+- Analog Headset Mic is a CTIA TRRS (3-ring) plug. Details are in
+  [Analog plugin mic](#analog-plugin-mic-35-mm).
 - Overlay + `ALSA_CONFIG_UCM2` only affects processes with that
   environment. Session audio gets it from the systemd drop-ins.
-- `reconfig` fails if anything still holds `hw:HDAudio`. Install
-  stops PipeWire first; the boot unit runs before `sound.target`.
+- Install still stops the session PipeWire stack so UCM and the
+  verb unit apply together; the boot unit runs before `sound.target`.
 
 ### Later (audio)
 
-- Kernel: pass PCI SSID `1025:1225` into the Realtek quirk table, or
-  add a DMI match for Swift SF514-52T.
+- Kernel: pass the real PCI SSID `1025:1225` into the Realtek quirk
+  table as `ALC255_FIXUP_ACER_HEADSET_MIC`, and make
+  `snd_hda_codec_reset` safe on ASoC-bound codecs.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
   on PR 571.
 - DMIC gain: the EnableSequence is 100% of the raw ALSA control.
