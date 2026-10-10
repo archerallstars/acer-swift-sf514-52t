@@ -9,17 +9,23 @@
 # snd_hda_codec_reset (ASoC-bound codec, no PCI snd_card lock).
 #
 # This script never writes reconfig. It programs the live codec through
-# the HDA hwdep: D0 on the analog path, pin 0x19 IN+VREF_80, unmute the
-# ADC mixers into 0x19, unmute both ADCs, write the headset-mic pin
-# default, then Realtek UAJ. Jack presence is the ALSA CARD control
-# "Front Headphone Jack" (hwdep GET_PIN_SENSE stays 0 on this AVS
-# codec). A present jack always gets CTIA (0x45=0xd489), the Acer
-# 1213187 headset-mic mode. Immediate CTIA-vs-OMTP probes on this AVS
-# codec return OMTP after a replug and kill capture; Headphone
-# playback is ignored so PipeWire mixer changes cannot flip UAJ.
-# --watch debounces the jack and re-applies CTIA when coef 0x45
-# drifts, so a mic left plugged survives reboot and session audio
-# restarts. UCM binds analog capture as Headset.
+# the HDA hwdep: D0 on the analog path, pin 0x19 IN+VREF_80 after
+# CTIA, unmute the ADC mixers into 0x19, unmute both ADCs, write the
+# headset-mic pin default, then Realtek UAJ. Jack presence is the
+# ALSA CARD control "Front Headphone Jack" (hwdep GET_PIN_SENSE stays
+# 0 on this AVS codec). A present jack always gets CTIA (0x45=0xd489)
+# with pin 0x19 IN+VREF_80 (0x24) and pin 0x21 HP Out (0xc0).
+# Unplugged UAJ gates MIC2 Vref, so pin 0x19 then reads 0x20
+# (IN VREF_HIZ). That is the Acer 1213187 headset-mic mode, and it
+# keeps 2-ring headphone playback working. Kernel mic-in
+# (0x45=0xc489, HP pin off) is not used: it captured only noise on
+# a 2-ring analog mic and silenced 2-ring headphones. Immediate
+# CTIA-vs-OMTP probes on this AVS codec return OMTP after a replug
+# and kill capture; Headphone playback on/off is ignored so PipeWire
+# mixer changes cannot flip UAJ. --watch debounces the jack and
+# re-applies CTIA when coef 0x45 drifts, so a 3-ring mic
+# left plugged survives reboot and session audio restarts. UCM
+# binds analog capture as Headset.
 #
 # SUSE bug 1213187 (model=1025:1330) applied on snd-hda-intel. Those
 # pin defaults are the hardware map this verb sequence follows.
@@ -45,6 +51,9 @@ headset_microphone_node="0x19"
 pin_widget_control_set_verb="0x707"
 pin_widget_control_get_verb="0xf07"
 pin_widget_control_in_vref80="0x24"
+# Unplugged UAJ writes MIC2 Vref gated (0x06=0x6104). The codec then
+# reports pin 0x19 as IN plus VREF_HIZ even after SET 0x24.
+pin_widget_control_in_vref_hiz="0x20"
 
 # Iwai's ALC255_FIXUP_ACER_HEADSET_DMIC pin default for SSID 1025:1225
 # (headset mic, no presence). SET_CONFIG_DEFAULT_BYTES_0..3.
@@ -58,8 +67,14 @@ pin_config_default_get_verb="0xf1c"
 # Combo-jack headphone pin. hwdep GET_PIN_SENSE stays 0 on this AVS
 # codec even when the jack is plugged; the live kcontrol is
 # iface=CARD,name='Front Headphone Jack'. Pin 0x21 is OUT-only.
+# Kernel mic-in wrote this pin to 0 and silenced 2-ring headphones.
 headphone_node="0x21"
 headphone_pin_control_hp_out="0xc0"
+# Pin-ctls 0x00 turns a pin off (no IN/OUT, VREF_HIZ).
+pin_widget_control_off="0x00"
+# Pin 0x1a is unused on this chassis (NO_HP_MIC). Mic-in biased it
+# as headphone-mic; CTIA and unplugged keep it off.
+headphone_microphone_node="0x1a"
 amixer_executable="/usr/bin/amixer"
 front_headphone_jack_mixer_name="Front Headphone Jack"
 front_headphone_jack_values_on="values=on"
@@ -70,11 +85,13 @@ front_headphone_jack_values_off="values=off"
 amp_gain_mute_set_verb="0x300"
 headset_microphone_pin_amp_boost_payload="0x7003"
 
-# ADC mux mixers. Connection lists put 0x19 at index 1 on both.
-# SET_AMP_GAIN_MUTE payload 0x7100 is Input+Left+Right+index 1, unmuted.
+# ADC mux mixers. Connection lists put 0x19 at index 1 and 0x1a at
+# index 2 on both. SET_AMP_GAIN_MUTE payload 0x7100 unmutes index 1;
+# 0x7280 mutes index 2 so leftover mic-in cannot keep 0x1a in the mix.
 adc_mixer_node_primary="0x22"
 adc_mixer_node_secondary="0x23"
 headset_microphone_mixer_unmute_payload="0x7100"
+headphone_microphone_mixer_mute_payload="0x7280"
 
 # Analog ADCs that feed AVS "HDAudio Analog" capture. Amp-In ofs=0x17
 # is 0 dB (stepsize 0x02 is 0.75 dB/step). Payload 0x7027 unmutes
@@ -382,10 +399,32 @@ codec_wait_for_alc255() {
 # CODEC PATH PROGRAMMING
 # =============================================================================
 
+# Turn headphone pin 0x21 to HP Out and pin 0x1a off. Kernel mic-in
+# wrote pin 0x21 to 0, which silenced 2-ring headphones. Inputs:
+# hwdep_device_path.
+codec_restore_headphone_playback_pins() {
+	local hwdep_device_path="$1"
+	codec_write_hda_verb \
+		"${hwdep_device_path}" \
+		"${headphone_node}" \
+		"${pin_widget_control_set_verb}" \
+		"${headphone_pin_control_hp_out}" \
+		>/dev/null
+	codec_write_hda_verb \
+		"${hwdep_device_path}" \
+		"${headphone_microphone_node}" \
+		"${pin_widget_control_set_verb}" \
+		"${pin_widget_control_off}" \
+		>/dev/null
+	log_info "Restored pin ${headphone_node} HP Out ${headphone_pin_control_hp_out} and pin ${headphone_microphone_node} off"
+}
+
 # Apply alc_headset_mode_ctia for ALC255 (plugged iPhone-style TRRS).
 # 0x45=0xd489 and 0x1b=0x0c2b switch UAJ to headset-mic. 0x06=0x6100
 # ungates MIC2 Vref. WRITE_COEFEX 0x57/0x03=0x8ea6 is the kernel CTIA
-# direct-drive HP amp value. Inputs: hwdep_device_path.
+# direct-drive HP amp value. Also restores pin 0x21 HP Out and
+# turns pin 0x1a off so leftover mic-in cannot silence 2-ring
+# headphones. Inputs: hwdep_device_path.
 codec_apply_alc255_ctia_headset_mode() {
 	local hwdep_device_path="$1"
 	codec_write_realtek_coef \
@@ -405,7 +444,8 @@ codec_apply_alc255_ctia_headset_mode() {
 		"${hwdep_device_path}" \
 		"${alc255_mic2_vref_coef_index}" \
 		"${alc255_mic2_vref_ungated_value}"
-	log_info "Set ALC255 CTIA plugged headset mode (0x45=${alc255_ctia_headset_mode_coef_value_45})"
+	codec_restore_headphone_playback_pins "${hwdep_device_path}"
+	log_info "Set ALC255 CTIA plugged headset mode (0x45=${alc255_ctia_headset_mode_coef_value_45}, pin ${headphone_node}=${headphone_pin_control_hp_out})"
 }
 
 # Write the ALC255 alc255_set_default_jack_type sequence (UAJ manual,
@@ -437,8 +477,8 @@ codec_apply_alc255_default_jack_type() {
 }
 
 # Apply alc_headset_mode_unplugged for ALC255. 0x45=0xd089, MIC2 Vref
-# gated with HP, COEFEX 0x8aa6. Restores pin 0x21 as HP Out.
-# Inputs: hwdep_device_path.
+# gated with HP, COEFEX 0x8aa6. Restores pin 0x21 as HP Out and
+# turns pin 0x1a off. Inputs: hwdep_device_path.
 codec_apply_alc255_unplugged_headset_mode() {
 	local hwdep_device_path="$1"
 	codec_write_realtek_coef \
@@ -458,12 +498,7 @@ codec_apply_alc255_unplugged_headset_mode() {
 		"${coefex_processing_node}" \
 		"${alc255_unplugged_coefex_index}" \
 		"${alc255_unplugged_coefex_value}"
-	codec_write_hda_verb \
-		"${hwdep_device_path}" \
-		"${headphone_node}" \
-		"${pin_widget_control_set_verb}" \
-		"${headphone_pin_control_hp_out}" \
-		>/dev/null
+	codec_restore_headphone_playback_pins "${hwdep_device_path}"
 	log_info "Set ALC255 unplugged UAJ mode (0x45=${alc255_unplugged_coef_value_45}); plug a CTIA TRRS headset to enable analog capture"
 }
 
@@ -544,9 +579,12 @@ codec_boost_headset_microphone_pin_amp() {
 	log_info "Boosted pin ${headset_microphone_node} Amp-In to payload ${headset_microphone_pin_amp_boost_payload}"
 }
 
-# Set pin 0x19 to IN plus VREF_80 and require the GET to match.
-# Inputs: hwdep_device_path.
-codec_enable_headset_microphone_pin() {
+# Set pin 0x19 to IN plus VREF_80 and print the GET Pin-ctls. Does not
+# exit when GET is VREF_HIZ: unplugged UAJ gates MIC2 Vref and the
+# codec then reports 0x20. Call codec_enable_headset_microphone_pin
+# after CTIA so GET can stay 0x24. Inputs: hwdep_device_path.
+# Output: GET Pin-ctls integer on stdout.
+codec_write_headset_microphone_pin_in_vref80() {
 	local hwdep_device_path="$1"
 	local pin_control_value
 	codec_write_hda_verb \
@@ -562,21 +600,38 @@ codec_enable_headset_microphone_pin() {
 			"${pin_widget_control_get_verb}" \
 			"0x0"
 	)"
+	echo "${pin_control_value}"
+	return 0  # GET Pin-ctls after SET IN+VREF_80
+}
+
+# Set pin 0x19 to IN plus VREF_80 and require the GET to match.
+# Call this after CTIA so MIC2 Vref is ungated. Inputs:
+# hwdep_device_path.
+codec_enable_headset_microphone_pin() {
+	local hwdep_device_path="$1"
+	local pin_control_value
+	pin_control_value="$(
+		codec_write_headset_microphone_pin_in_vref80 \
+			"${hwdep_device_path}"
+	)"
 	if (( pin_control_value == pin_widget_control_in_vref80 )); then
 		log_info "Pin ${headset_microphone_node} Pin-ctls=${pin_control_value} (IN VREF_80)"
+		return 0  # pin 0x19 is IN plus VREF_80 after CTIA
 	else
 		log_error "Pin ${headset_microphone_node} Pin-ctls=${pin_control_value}, expected ${pin_widget_control_in_vref80}"
 		exit 1
 	fi
 }
 
-# Put the headset-mic pin, headphone jack-detect pin, both ADC mixers,
-# and both analog ADCs in D0. Inputs: hwdep_device_path.
+# Put the headset-mic pin, unused headphone-mic pin, headphone
+# jack-detect pin, both ADC mixers, and both analog ADCs in D0.
+# Inputs: hwdep_device_path.
 codec_power_up_headset_microphone_path() {
 	local hwdep_device_path="$1"
 	local powered_widget_node
 	for powered_widget_node in \
 		"${headset_microphone_node}" \
+		"${headphone_microphone_node}" \
 		"${headphone_node}" \
 		"${adc_mixer_node_primary}" \
 		"${adc_mixer_node_secondary}" \
@@ -612,8 +667,9 @@ codec_unmute_analog_adcs() {
 	log_info "Unmuted analog ADCs ${adc_node_primary} and ${adc_node_secondary} at payload ${adc_unmute_payload}"
 }
 
-# Unmute mixer index 1 (pin 0x19) on both ADC muxes. Other indexes stay
-# muted. Inputs: hwdep_device_path.
+# Unmute mixer index 1 (pin 0x19) on both ADC muxes and mute index 2
+# (pin 0x1a) so leftover mic-in cannot keep the headphone-mic in the
+# mix. Inputs: hwdep_device_path.
 codec_unmute_headset_microphone_mixers() {
 	local hwdep_device_path="$1"
 	codec_write_hda_verb \
@@ -628,7 +684,19 @@ codec_unmute_headset_microphone_mixers() {
 		"${amp_gain_mute_set_verb}" \
 		"${headset_microphone_mixer_unmute_payload}" \
 		>/dev/null
-	log_info "Unmuted ADC mixers ${adc_mixer_node_primary} and ${adc_mixer_node_secondary} index 1 (pin ${headset_microphone_node})"
+	codec_write_hda_verb \
+		"${hwdep_device_path}" \
+		"${adc_mixer_node_primary}" \
+		"${amp_gain_mute_set_verb}" \
+		"${headphone_microphone_mixer_mute_payload}" \
+		>/dev/null
+	codec_write_hda_verb \
+		"${hwdep_device_path}" \
+		"${adc_mixer_node_secondary}" \
+		"${amp_gain_mute_set_verb}" \
+		"${headphone_microphone_mixer_mute_payload}" \
+		>/dev/null
+	log_info "Unmuted ADC mixers ${adc_mixer_node_primary} and ${adc_mixer_node_secondary} index 1 (pin ${headset_microphone_node}); muted index 2 (pin ${headphone_microphone_node})"
 }
 
 # Write SET_CONFIG_DEFAULT 0x03a11130 on pin 0x19 (headset mic, no
@@ -686,15 +754,38 @@ codec_write_headset_microphone_pin_default() {
 # state. Inputs: hwdep_device_path.
 codec_program_headset_microphone_path() {
 	local hwdep_device_path="$1"
+	local pin_control_value
 	codec_power_up_headset_microphone_path "${hwdep_device_path}"
 	codec_write_headset_microphone_pin_default "${hwdep_device_path}"
-	codec_enable_headset_microphone_pin "${hwdep_device_path}"
+	pin_control_value="$(
+		codec_write_headset_microphone_pin_in_vref80 \
+			"${hwdep_device_path}"
+	)"
+	log_info "Pin ${headset_microphone_node} SET ${pin_widget_control_in_vref80}, GET=${pin_control_value} before UAJ"
 	codec_boost_headset_microphone_pin_amp "${hwdep_device_path}"
 	codec_unmute_headset_microphone_mixers "${hwdep_device_path}"
 	codec_unmute_analog_adcs "${hwdep_device_path}"
 	codec_apply_alc255_default_jack_type "${hwdep_device_path}"
 	sleep "${alc255_default_jack_type_settle_seconds}"
 	codec_apply_headset_jack_mode "${hwdep_device_path}"
+	if codec_headphone_jack_is_present "${hwdep_device_path}"; then
+		codec_enable_headset_microphone_pin "${hwdep_device_path}"
+	else
+		pin_control_value="$(
+			codec_write_hda_verb \
+				"${hwdep_device_path}" \
+				"${headset_microphone_node}" \
+				"${pin_widget_control_get_verb}" \
+				"0x0"
+		)"
+		if (( pin_control_value == pin_widget_control_in_vref_hiz )); then
+			log_info "Pin ${headset_microphone_node} Pin-ctls=${pin_control_value} (IN VREF_HIZ) with empty jack; MIC2 Vref is gated until a 3-ring CTIA plug"
+		elif (( pin_control_value == pin_widget_control_in_vref80 )); then
+			log_info "Pin ${headset_microphone_node} Pin-ctls=${pin_control_value} (IN VREF_80) with empty jack"
+		else
+			log_info "Pin ${headset_microphone_node} Pin-ctls=${pin_control_value} with empty jack"
+		fi
+	fi
 	log_info "Analog headset mic path enabled on ${hwdep_device_path} (pin ${headset_microphone_node})"
 }
 

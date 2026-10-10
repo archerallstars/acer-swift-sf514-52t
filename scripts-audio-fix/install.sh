@@ -70,12 +70,24 @@ session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.con
 overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
 headset_unit_name="sf514-alc255-headset.service"
 
-# --- User-session PipeWire stack; sockets are stopped so they cannot
-#     immediately restart the services while headset verbs run and UCM
-#     is reloaded. ---
+# --- User-session PipeWire stack. pipewire.service Requires
+#     pipewire.socket (same for pulse). Stopping the socket in the
+#     same transaction as the service lets gnome-shell reconnect and
+#     cancel the socket job ("Job for pipewire.socket canceled").
+#     Stop the services only; sockets stay so the next start can
+#     attach. replace-irreversibly keeps a reconnect from canceling
+#     the service stop. --no-warn hides systemd's "triggering units
+#     are still active: pipewire.socket" line. Restart the services
+#     after start so new ALSA_CONFIG_UCM2 drop-ins apply even when
+#     stop was a no-op. ---
+systemctl_job_mode_replace_irreversibly="--job-mode=replace-irreversibly"
+systemctl_no_warn="--no-warn"
 user_audio_stop_unit_names=(
-	pipewire.socket
-	pipewire-pulse.socket
+	wireplumber.service
+	pipewire-pulse.service
+	pipewire.service
+)
+user_audio_restart_unit_names=(
 	pipewire.service
 	pipewire-pulse.service
 	wireplumber.service
@@ -144,7 +156,7 @@ main() {
 	log_info "Install complete. Overlay is at ${ucm2_merged_directory}."
 	log_info "WirePlumber DMIC 51/52 (Mult=8.0) and analog Headset 53/54 (Mult=4.0) gain fragments are in ${installed_wireplumber_conf_directory}."
 	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and capture."
-	log_info "Analog headset capture needs a plugged jack (Front Headphone on) and Headset Microphone as the input. A 3-ring CTIA mic can stay plugged across reboot; the watch unit keeps CTIA applied."
+	log_info "Analog headset capture needs a plugged jack (Front Headphone on) and Headset Microphone as the input. A 3-ring CTIA mic can stay plugged across reboot; the watch unit keeps CTIA with HP Out so 2-ring headphones still play. A 2-ring analog mic is not compatible."
 }
 
 # =============================================================================
@@ -751,35 +763,56 @@ session_reload_user_systemd() {
 	fi
 }
 
-# Start the session owner's PipeWire sockets and WirePlumber.
+# Start the session owner's PipeWire sockets and WirePlumber, then
+# restart the services so ALSA_CONFIG_UCM2 drop-ins apply even when
+# stop left a process running. Inputs: none. Exits 0 on success, 1
+# when start or restart fails.
 session_start_user_audio() {
 	if [[ -z "${resolved_session_user_name}" ]]; then
 		log_info "No session user; start PipeWire from your login session"
 		return 0  # nothing to start
 	else
 		if session_user_systemctl start "${user_audio_start_unit_names[@]}"; then
-			log_info "Started user audio units for ${resolved_session_user_name}"
-			return 0  # audio stack started
+			if session_user_systemctl \
+				"${systemctl_job_mode_replace_irreversibly}" \
+				"${systemctl_no_warn}" \
+				restart \
+				"${user_audio_restart_unit_names[@]}"
+			then
+				log_info "Started user audio units for ${resolved_session_user_name}"
+				return 0  # audio stack started with new drop-ins
+			else
+				log_error "Failed to restart user audio services for ${resolved_session_user_name}"
+				return 1  # sockets are up but services did not bounce
+			fi
 		else
 			log_error "Failed to start user audio units for ${resolved_session_user_name}"
-			return 1
+			return 1  # sockets or WirePlumber did not start
 		fi
 	fi
 }
 
-# Stop the session owner's PipeWire stack, including sockets, so UCM
-# reloads on the next start. Headset-mic verbs run after that start.
+# Stop the session owner's PipeWire services so analog PCM closes and
+# UCM can reload on the next start. Does not stop the sockets:
+# gnome-shell reconnect cancels a pipewire.socket stop job. A failed
+# stop does not abort install; session_start_user_audio restarts the
+# services. Headset-mic verbs run after that start.
 session_stop_user_audio() {
 	if [[ -z "${resolved_session_user_name}" ]]; then
 		log_info "No session user; stop PipeWire yourself before headset-mic verbs"
 		return 0  # cannot stop a session we cannot see
 	else
-		if session_user_systemctl stop "${user_audio_stop_unit_names[@]}"; then
+		if session_user_systemctl \
+			"${systemctl_job_mode_replace_irreversibly}" \
+			"${systemctl_no_warn}" \
+			stop \
+			"${user_audio_stop_unit_names[@]}"
+		then
 			log_info "Stopped user audio units for ${resolved_session_user_name}"
 			return 0  # analog PCM should now be closed
 		else
-			log_error "Could not stop user audio units for ${resolved_session_user_name}"
-			exit 1
+			log_info "Could not stop all user audio services for ${resolved_session_user_name} (a canceled job is common while GNOME holds PipeWire). Continuing so start can bounce the stack with the new UCM drop-ins."
+			return 0  # install files are already in place; start still bounces
 		fi
 	fi
 }

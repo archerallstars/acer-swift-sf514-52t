@@ -24,6 +24,9 @@ root `AGENTS.md`.
   stack with `/etc` and apply each multiplier twice.
 - Touch fingerprint or other `scripts-<area>-fix` trees from an audio
   task.
+- Apply kernel `alc_headset_mode_mic_in` (HP pin off) or a `0x46` /
+  hiss classifier that can select it. That silenced 2-ring
+  headphones on this chassis.
 
 ## UCM and mixer
 
@@ -60,16 +63,24 @@ The boot unit programs the live codec through `/dev/snd/hwC*D0`
 (HDA hwdep, `CAP_SYS_RAWIO`): D0 on pin `0x19`, mixers `0x22`/`0x23`,
 and ADCs `0x08`/`0x09`; `SET_CONFIG_DEFAULT` `0x03a11130` on `0x19`;
 pin `0x19` `SET_PIN_WIDGET_CONTROL 0x24` (IN + VREF_80) and Amp-In
-boost; unmute ADC mux index 1 on `0x22`/`0x23`; unmute ADCs
-`0x08`/`0x09`; `alc255_set_default_jack_type` (`0x45=0xd089`).
-A present Front Headphone Jack always gets CTIA (`0x45=0xd489`),
-the Acer 1213187 headset-mic mode. Immediate CTIA-vs-OMTP probes
-on this AVS codec return OMTP after a replug and kill capture.
-Headphone playback is ignored so PipeWire mixer changes cannot
-flip UAJ. Pin `0x21` is OUT-only. hwdep GET_PIN_SENSE stays 0;
-udev does not emit change events for the Front Headphone input
-switch. The unit is `Type=simple --watch`: it debounces that
-kcontrol and re-applies CTIA when coef `0x45` drifts, so a mic
+boost; unmute ADC mux index 1 on `0x22`/`0x23` and mute index 2;
+unmute ADCs `0x08`/`0x09`; `alc255_set_default_jack_type`
+(`0x45=0xd089`). A present Front Headphone Jack always gets CTIA
+(`0x45=0xd489`) with pin `0x19` IN+VREF_80 (`0x24`), pin `0x21`
+HP Out (`0xc0`), and pin `0x1a` off. Unplugged UAJ gates MIC2
+Vref, so pin `0x19` then reads `0x20` (IN VREF_HIZ). Require
+`0x24` only after CTIA; do not `exit 1` on `0x20` while the
+jack is empty. That is the Acer 1213187 headset-mic mode, and
+it keeps 2-ring headphone playback working. Do not apply kernel
+`alc_headset_mode_mic_in` (`0x45=0xc489`, HP pin off): it captured
+only noise on a 2-ring analog mic and silenced 2-ring headphones.
+Immediate CTIA-vs-OMTP probes on this AVS codec return OMTP
+after a replug and kill capture. Headphone playback
+on/off is ignored so PipeWire mixer changes cannot flip UAJ.
+Pin `0x21` is OUT-only. hwdep GET_PIN_SENSE stays 0; udev does
+not emit change events for the Front Headphone input switch.
+The unit is `Type=simple --watch`: it debounces that kcontrol
+and re-applies CTIA when coef `0x45` drifts, so a 3-ring mic
 left plugged survives reboot. Analog ADCs unmute at payload
 `0x7027` (about +12 dB). WirePlumber 53/54 apply `S32LE` /
 `alsa.resolution_bits = 24` and linear `Mult = 4.0` on
@@ -78,8 +89,9 @@ left plugged survives reboot. Analog ADCs unmute at payload
 "Front Headphone Jack"` and `CaptureFormat S32_LE`.
 
 Do not retask pin `0x21` as an ADC (no IN pincap). Analog headset
-capture is a CTIA TRRS (3-ring) mic on Headset Microphone. Real
-internal capture is AVS DMIC.
+capture is a CTIA TRRS (3-ring) mic on Headset Microphone. A
+2-ring analog microphone on this combo jack is not compatible.
+Real internal capture is AVS DMIC.
 
 The boot unit runs `/usr/bin/bash` with the pin script as
 its argument. The script lives under `/var/lib/alsa/`
@@ -97,6 +109,17 @@ reads the script as data. Python 3 issues the hwdep ioctl.
   overlayfs otherwise keeps empty nlink-0 dirs in the merge.
 - Relabel installed unit files with `restorecon`. `cp -a` from the
   user's home leaves `user_home_t`, and systemd cannot read that.
+- Do not `systemctl --user stop pipewire.socket` in the same
+  transaction as `pipewire.service`. The service `Requires=` the
+  socket; gnome-shell reconnect then cancels the socket job
+  (`Job for pipewire.socket canceled`) and install aborts after
+  the overlay is already in place. Stop WirePlumber / pipewire-pulse
+  / pipewire **services** with `--job-mode=replace-irreversibly`
+  and `--no-warn` (sockets stay up, so systemd would otherwise
+  print `triggering units are still active: pipewire.socket`),
+  then start sockets and restart the services so
+  `ALSA_CONFIG_UCM2` drop-ins apply. A canceled stop must not
+  `exit 1`.
 - Install WirePlumber 51-54 under `/etc/wireplumber/wireplumber.conf.d/`
   and delete the session user's home copies of those filenames.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +
@@ -105,18 +128,26 @@ reads the script as data. Python 3 issues the hwdep ioctl.
   of those filenames, unmount the UCM overlay, reload systemd,
   restart the session PipeWire stack.
 - `verify.sh` must not treat `wpctl status` as a pass. Discover cards
-  from `/proc/asound/cards`. Require HiFi from `spa-acp-tool` when the
-  overlay is mounted. Require live pin `0x19` Pin-ctls `0x24` (VREF_80)
-  or `0x22` (VREF_50 leftover), analog capture PCM `pcm0c`, UCM
-  `Headset`, and the headset unit `--watch` poll.
-  Do not require analog `Capture Switch` (it never appears under AVS
-  on this BIOS). Require the 51-54 fragments under
-  `/etc/wireplumber/wireplumber.conf.d/` (DMIC `Mult = 8.0`, Headset
-  `Mult = 4.0`). A leftover home copy of those filenames is a fail.
-  `wpctl` volume 1.00 on the DMIC is expected. Analog headset
-  capture still needs a plugged jack and Headset Microphone
-  selected. A 3-ring CTIA mic can stay plugged; verify does not
-  treat an empty jack as a fail.
+  from `/proc/asound/cards`. From distrobox it re-execs on the host
+  so `spa-acp-tool` uses `/var/lib/alsa/ucm2/merged`. Require HiFi
+  from `spa-acp-tool` when the overlay is mounted; retry a few times
+  because a just-restarted PipeWire stack can list only off+pro-audio
+  for a moment. Close GNOME Settings capture meters if HD-Audio or
+  DMIC stay on pro-audio. Require live pin `0x19` Pin-ctls `0x24`
+  (VREF_80) when Front Headphone Jack is on. An empty jack is
+  `0x20` (IN VREF_HIZ) because unplugged UAJ gates MIC2 Vref; that
+  is a pass. Pin `0x21` Pin-ctls `0xc0` (HP Out) is required either
+  way. Also require analog capture PCM `pcm0c`, UCM `Headset`, the
+  headset unit `--watch` poll, and the installed pin script to set
+  CTIA `0xd489` plus HP Out `0xc0` with no
+  `codec_apply_alc255_mic_in_headset_mode`. Do not require analog
+  `Capture Switch` (it never appears under AVS on this BIOS). Require
+  the 51-54 fragments under `/etc/wireplumber/wireplumber.conf.d/`
+  (DMIC `Mult = 8.0`, Headset `Mult = 4.0`). A leftover home copy of
+  those filenames is a fail. `wpctl` volume 1.00 on the DMIC is
+  expected. Analog headset capture still needs a plugged jack and
+  Headset Microphone selected. A 3-ring CTIA mic can stay plugged;
+  verify does not treat an empty jack as a fail.
 
 ## Out of v1 unless the user asks
 

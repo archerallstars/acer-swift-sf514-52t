@@ -53,10 +53,19 @@ session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.con
 overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
 headset_unit_name="sf514-alc255-headset.service"
 
-# --- User-session PipeWire stack ---
+# --- User-session PipeWire stack. Do not stop pipewire.socket in the
+#     same transaction as pipewire.service: gnome-shell reconnect
+#     cancels that socket job. Stop services only; --no-warn hides
+#     the triggering-socket line. Restart them after start so
+#     drop-in removal takes effect. ---
+systemctl_job_mode_replace_irreversibly="--job-mode=replace-irreversibly"
+systemctl_no_warn="--no-warn"
 user_audio_stop_unit_names=(
-	pipewire.socket
-	pipewire-pulse.socket
+	wireplumber.service
+	pipewire-pulse.service
+	pipewire.service
+)
+user_audio_restart_unit_names=(
 	pipewire.service
 	pipewire-pulse.service
 	wireplumber.service
@@ -464,34 +473,54 @@ session_reload_user_systemd() {
 	fi
 }
 
-# Start the session owner's PipeWire sockets and WirePlumber.
+# Start the session owner's PipeWire sockets and WirePlumber, then
+# restart the services so removed drop-ins take effect. Inputs: none.
+# Exits 0 on success, 1 when start or restart fails.
 session_start_user_audio() {
 	if [[ -z "${resolved_session_user_name}" ]]; then
 		log_info "No session user; start PipeWire from your login session"
 		return 0  # nothing to start
 	else
 		if session_user_systemctl start "${user_audio_start_unit_names[@]}"; then
-			log_info "Started user audio units for ${resolved_session_user_name}"
-			return 0  # audio stack started
+			if session_user_systemctl \
+				"${systemctl_job_mode_replace_irreversibly}" \
+				"${systemctl_no_warn}" \
+				restart \
+				"${user_audio_restart_unit_names[@]}"
+			then
+				log_info "Started user audio units for ${resolved_session_user_name}"
+				return 0  # audio stack started without this overlay's drop-ins
+			else
+				log_error "Failed to restart user audio services for ${resolved_session_user_name}"
+				return 1  # sockets are up but services did not bounce
+			fi
 		else
 			log_error "Failed to start user audio units for ${resolved_session_user_name}"
-			return 1
+			return 1  # sockets or WirePlumber did not start
 		fi
 	fi
 }
 
-# Stop the session owner's PipeWire stack, including sockets.
+# Stop the session owner's PipeWire services so analog PCM closes
+# before the overlay is unmounted. Does not stop the sockets: a
+# gnome-shell reconnect cancels a pipewire.socket stop job. A failed
+# stop does not abort uninstall.
 session_stop_user_audio() {
 	if [[ -z "${resolved_session_user_name}" ]]; then
 		log_info "No session user; skip stopping PipeWire"
 		return 0  # cannot stop a session we cannot see
 	else
-		if session_user_systemctl stop "${user_audio_stop_unit_names[@]}"; then
+		if session_user_systemctl \
+			"${systemctl_job_mode_replace_irreversibly}" \
+			"${systemctl_no_warn}" \
+			stop \
+			"${user_audio_stop_unit_names[@]}"
+		then
 			log_info "Stopped user audio units for ${resolved_session_user_name}"
 			return 0  # analog PCM should now be closed
 		else
-			log_error "Could not stop user audio units for ${resolved_session_user_name}"
-			exit 1
+			log_info "Could not stop all user audio services for ${resolved_session_user_name} (a canceled job is common while GNOME holds PipeWire). Continuing uninstall."
+			return 0  # overlay files must still be removed
 		fi
 	fi
 }

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Check that AVS audio on the Acer Swift SF514-52T is using this repo's
-# UCM overlay, analog headset mic verbs (pin 0x19 IN+VREF_80), the
-# Headset UCM device, and the WirePlumber DMIC 51/52 plus analog
-# Headset 53/54 gain fragments. Discovers cards from /proc/asound/cards
-# (does not assume card numbers 1/2/3). Does not treat wpctl status as
-# a pass by itself.
+# UCM overlay, analog headset mic verbs (pin 0x19 IN+VREF_80 when the
+# jack is plugged, IN VREF_HIZ when empty; pin 0x21 HP Out so 2-ring
+# headphones keep playing), the Headset UCM device, and the
+# WirePlumber DMIC 51/52 plus analog Headset 53/54 gain fragments.
+# Discovers cards from /proc/asound/cards (does not assume card
+# numbers 1/2/3). Re-execs on the Fedora host from distrobox so
+# spa-acp-tool sees ALSA_CONFIG_UCM2. Does not treat wpctl status
+# as a pass by itself.
 
 set -euo pipefail
 
@@ -22,7 +25,12 @@ obsolete_card_long_name_fragment="hdaudioB0D2"
 required_chip_name="ALC255"
 expected_headset_microphone_node="0x19"
 expected_headset_microphone_pin_ctls_vref80="0x24"
-expected_headset_microphone_pin_ctls_vref50="0x22"
+# Unplugged UAJ gates MIC2 Vref; pin 0x19 then reads IN VREF_HIZ.
+expected_headset_microphone_pin_ctls_vref_hiz="0x20"
+expected_headphone_node="0x21"
+expected_headphone_pin_ctls_hp_out="0xc0"
+front_headphone_jack_mixer_name="Front Headphone Jack"
+front_headphone_jack_values_on="values=on"
 required_headset_ucm_device_name="Headset"
 overlay_ucm_hd_audio_hifi_relative_path="Intel/avs/avs_hdaudio/AVS HD-Audio-HiFi.conf"
 
@@ -60,6 +68,13 @@ headset_unit_file_name="sf514-alc255-headset.service"
 installed_headset_unit_on_host="/etc/systemd/system/sf514-alc255-headset.service"
 installed_headset_unit_from_container="/run/host/etc/systemd/system/sf514-alc255-headset.service"
 required_headset_unit_watch_snippet="--watch"
+installed_headset_script_on_host="/var/lib/alsa/sf514-audio/apply-headset-pins.sh"
+installed_headset_script_from_container="/run/host/var/lib/alsa/sf514-audio/apply-headset-pins.sh"
+# Installed pin script must stay on always-CTIA with HP Out. Kernel
+# mic-in (HP pin off) silenced 2-ring headphones.
+required_headset_ctia_coef_snippet='alc255_ctia_headset_mode_coef_value_45="0xd489"'
+required_headset_hp_out_snippet='headphone_pin_control_hp_out="0xc0"'
+forbidden_headset_mic_in_function_snippet="codec_apply_alc255_mic_in_headset_mode"
 required_dmic_soft_mixer_snippet="api.alsa.soft-mixer = true"
 required_dmic_gain_multiplier_snippet="Mult = 8.0"
 # 53 also requires S32LE / 24-bit so GNOME does not open analog capture
@@ -68,6 +83,15 @@ required_dmic_gain_multiplier_snippet="Mult = 8.0"
 required_headset_audio_format_snippet='audio.format = "S32LE"'
 required_headset_resolution_bits_snippet="alsa.resolution_bits = 24"
 required_headset_gain_multiplier_snippet="Mult = 4.0"
+
+# --- spa-acp-tool. A just-restarted PipeWire stack can list only
+#     off+pro-audio for a second while GNOME already has HiFi.
+#     Distrobox's spa-acp-tool also misses HiFi unless it runs on
+#     the host with /var/lib/alsa/ucm2/merged. ---
+spa_acp_hifi_retry_count=5
+spa_acp_hifi_retry_sleep_seconds=1
+verify_on_host_environment_variable_name="SF514_VERIFY_ON_HOST"
+verify_on_host_environment_variable_value="1"
 
 # --- Kernel / sysfs locations ---
 proc_asound_cards_path="/proc/asound/cards"
@@ -99,6 +123,7 @@ log_info() {
 # Run the verification checklist and exit 0 only when every required
 # check passed. wpctl status is printed as a note, never as the result.
 main() {
+	path_reexec_on_host_if_container "$@"
 	path_resolve_ucm2_merged_directory
 	file_read_queue_enqueue "${proc_asound_cards_path}"
 	file_read_queue_drain
@@ -110,6 +135,7 @@ main() {
 	check_analog_capture_pcm
 	check_headset_ucm
 	check_headset_unit_watch
+	check_headset_ctia_script
 	check_alsaucm_dump
 	check_spa_acp_hifi
 	check_dmic_capture
@@ -229,6 +255,36 @@ path_find_executable() {
 	fi
 }
 
+# When started inside distrobox/podman, re-exec on the Fedora host as
+# this user so spa-acp-tool, arecord, and wpctl see the host overlay
+# and the session PipeWire stack. Inputs: original command-line
+# arguments forwarded to the host run.
+path_reexec_on_host_if_container() {
+	local already_on_host_flag=""
+	local script_absolute_path
+	if [[ -v "${verify_on_host_environment_variable_name}" ]]; then
+		already_on_host_flag="${!verify_on_host_environment_variable_name}"
+	else
+		already_on_host_flag=""
+	fi
+	if [[ "${already_on_host_flag}" == "${verify_on_host_environment_variable_value}" ]]; then
+		return 0  # this process is already the host re-exec
+	elif [[ -f /run/.containerenv || -f /.dockerenv ]]; then
+		if command -v distrobox-host-exec >/dev/null 2>&1; then
+			script_absolute_path="$(readlink -f "${BASH_SOURCE[0]}")"
+			log_info "Re-running on the Fedora host via distrobox-host-exec"
+			exec distrobox-host-exec env \
+				"${verify_on_host_environment_variable_name}=${verify_on_host_environment_variable_value}" \
+				bash "${script_absolute_path}" "$@"
+		else
+			log_info "No distrobox-host-exec; spa-acp-tool in this container may miss HiFi"
+			return 0  # continue in the container
+		fi
+	else
+		return 0  # already on the host
+	fi
+}
+
 # Print the first readable path among two candidates, or return 1.
 # Inputs: first_candidate_path, second_candidate_path.
 path_first_readable_file() {
@@ -296,6 +352,32 @@ cards_find_number_by_long_name() {
 		fi
 	done
 	return 1  # long name is not in /proc/asound/cards
+}
+
+# Return 0 when Front Headphone Jack on this AVS HD-Audio card is on.
+# An empty jack or a missing amixer is treated as unplugged so pin
+# 0x19 VREF_HIZ can pass. Inputs: hd_audio_card_number.
+cards_front_headphone_jack_is_present() {
+	local hd_audio_card_number="$1"
+	local amixer_path
+	local jack_control_text=""
+	if amixer_path="$(path_find_executable amixer)"; then
+		if jack_control_text="$(
+			"${amixer_path}" -c "${hd_audio_card_number}" cget \
+				"iface=CARD,name='${front_headphone_jack_mixer_name}'" \
+				2>/dev/null
+		)"; then
+			if [[ "${jack_control_text}" == *"${front_headphone_jack_values_on}"* ]]; then
+				return 0  # combo jack has a plug
+			else
+				return 1  # jack is empty or the control has no values=on
+			fi
+		else
+			return 1  # amixer could not read the jack control
+		fi
+	else
+		return 1  # amixer missing; treat as empty so unplugged 0x20 can pass
+	fi
 }
 
 # Fill the card_* arrays from the queued /proc/asound/cards text.
@@ -583,15 +665,35 @@ codec_extract_node_block() {
 	return 0  # awk printed the widget block (empty when the node is missing)
 }
 
-# Require live pin 0x19 Pin-ctls IN+VREF_80 (0x24) on the ALC255 codec
-# dump. IN+VREF_50 (0x22) still passes as leftover from an older unit;
-# the current unit always programs VREF_80. Sysfs user_pin_configs plus
-# reconfig cannot retask this ASoC codec.
+# Print the Pin-ctls token (0xNN) from a widget block. The dump writes
+# "Pin-ctls: 0x20: IN VREF_HIZ", so strip the trailing colon. Inputs:
+# widget_node_block. Output: hex Pin-ctls or empty.
+codec_extract_pin_ctls() {
+	local widget_node_block="$1"
+	printf '%s\n' "${widget_node_block}" | awk '
+		/Pin-ctls:/ {
+			token = $2
+			sub(/:$/, "", token)
+			print token
+			exit
+		}
+	'
+	return 0  # awk printed the Pin-ctls token (empty when missing)
+}
+
+# Require live pin 0x19 and pin 0x21 on the ALC255 codec dump. A
+# plugged jack needs 0x19 IN+VREF_80 (0x24) for 3-ring CTIA. An
+# empty jack is 0x20 IN VREF_HIZ because unplugged UAJ gates MIC2
+# Vref. Pin 0x21 must stay HP Out (0xc0) so 2-ring headphones play.
+# Sysfs user_pin_configs plus reconfig cannot retask this ASoC codec.
 check_headset_pin() {
 	local hd_audio_card_number
 	local codec_dump_path
 	local codec_dump_text=""
 	local headset_microphone_node_block=""
+	local headphone_node_block=""
+	local headset_microphone_pin_ctls=""
+	local headphone_pin_ctls=""
 	if hd_audio_card_number="$(cards_find_number_by_long_name "${expected_hd_audio_long_name}")"; then
 		:
 	else
@@ -615,18 +717,86 @@ check_headset_pin() {
 					"${codec_dump_text}" \
 					"${expected_headset_microphone_node}"
 			)"
-			if [[ "${headset_microphone_node_block}" == *"Pin-ctls: ${expected_headset_microphone_pin_ctls_vref80}"* ]]; then
-				report_pass "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls ${expected_headset_microphone_pin_ctls_vref80} (IN VREF_80) on ${required_chip_name} ${codec_dump_path}"
-				return 0  # analog mic pin is biased for CTIA
-			elif [[ "${headset_microphone_node_block}" == *"Pin-ctls: ${expected_headset_microphone_pin_ctls_vref50}"* ]]; then
-				report_pass "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls ${expected_headset_microphone_pin_ctls_vref50} (IN VREF_50 leftover) on ${required_chip_name} ${codec_dump_path}"
-				return 0  # leftover bias from an older unit
+			headphone_node_block="$(
+				codec_extract_node_block \
+					"${codec_dump_text}" \
+					"${expected_headphone_node}"
+			)"
+			headset_microphone_pin_ctls="$(
+				codec_extract_pin_ctls "${headset_microphone_node_block}"
+			)"
+			headphone_pin_ctls="$(
+				codec_extract_pin_ctls "${headphone_node_block}"
+			)"
+			if cards_front_headphone_jack_is_present "${hd_audio_card_number}"; then
+				if [[ "${headset_microphone_pin_ctls}" == "${expected_headset_microphone_pin_ctls_vref80}" ]]; then
+					report_pass "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls ${headset_microphone_pin_ctls} (IN VREF_80) on ${required_chip_name} ${codec_dump_path} with ${front_headphone_jack_mixer_name} on"
+				else
+					report_fail "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls is ${headset_microphone_pin_ctls:-missing}, expected ${expected_headset_microphone_pin_ctls_vref80} while ${front_headphone_jack_mixer_name} is on; reinstall so the headset unit runs CTIA hwdep verbs on avs_hdaudio"
+				fi
 			else
-				report_fail "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls is not ${expected_headset_microphone_pin_ctls_vref80} or ${expected_headset_microphone_pin_ctls_vref50}; reinstall so the headset unit runs hwdep verbs on avs_hdaudio"
+				if [[ "${headset_microphone_pin_ctls}" == "${expected_headset_microphone_pin_ctls_vref80}" ]]; then
+					report_pass "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls ${headset_microphone_pin_ctls} (IN VREF_80) on ${required_chip_name} ${codec_dump_path} with empty jack"
+				elif [[ "${headset_microphone_pin_ctls}" == "${expected_headset_microphone_pin_ctls_vref_hiz}" ]]; then
+					report_pass "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls ${headset_microphone_pin_ctls} (IN VREF_HIZ) on ${required_chip_name} ${codec_dump_path}; empty jack gates MIC2 Vref until a 3-ring CTIA plug"
+				else
+					report_fail "headset-pin" "Node ${expected_headset_microphone_node} Pin-ctls is ${headset_microphone_pin_ctls:-missing} with empty jack; expected ${expected_headset_microphone_pin_ctls_vref_hiz} (VREF_HIZ) or ${expected_headset_microphone_pin_ctls_vref80}; reinstall so the headset unit runs unplugged UAJ"
+				fi
+			fi
+			if [[ "${headphone_pin_ctls}" == "${expected_headphone_pin_ctls_hp_out}" ]]; then
+				report_pass "headset-hp-pin" "Node ${expected_headphone_node} Pin-ctls ${headphone_pin_ctls} (HP Out) on ${required_chip_name} ${codec_dump_path}"
+				return 0  # headphone playback pin is HP Out; mic pin result already recorded
+			else
+				report_fail "headset-hp-pin" "Node ${expected_headphone_node} Pin-ctls is ${headphone_pin_ctls:-missing}, expected ${expected_headphone_pin_ctls_hp_out} (leftover mic-in turns HP off); reinstall so 2-ring headphones can play"
 				return 0  # recorded as fail
 			fi
 		fi
 	fi
+}
+
+# Run spa-acp-tool against one card with the overlay UCM path. Retries
+# because a just-restarted PipeWire stack can list only off+pro-audio
+# for a moment. Prefers the host merge path so a container binary is
+# not pointed at /run/host. Inputs: spa_acp_tool_path, card_number,
+# spa_acp_argument, required_text_fragment. Output: tool text.
+spa_acp_tool_run_with_overlay() {
+	local spa_acp_tool_path="$1"
+	local card_number="$2"
+	local spa_acp_argument="$3"
+	local required_text_fragment="$4"
+	local overlay_directory
+	local attempt_index
+	local tool_output_text=""
+	if [[ -s "${ucm2_merged_directory_on_host}/${overlay_ucm_hd_audio_relative_path}" ]]; then
+		overlay_directory="${ucm2_merged_directory_on_host}"
+	else
+		overlay_directory="${ucm2_merged_directory}"
+	fi
+	attempt_index=1
+	while (( attempt_index <= spa_acp_hifi_retry_count )); do
+		if tool_output_text="$(
+			ALSA_CONFIG_UCM2="${overlay_directory}" \
+				"${spa_acp_tool_path}" -c "${card_number}" \
+				"${spa_acp_argument}" 2>&1
+		)"; then
+			:
+		else
+			tool_output_text="spa-acp-tool exited non-zero: ${tool_output_text}"
+		fi
+		if [[ "${tool_output_text}" == *"${required_text_fragment}"* ]]; then
+			printf '%s\n' "${tool_output_text}"
+			return 0  # overlay HiFi or Headset is visible
+		else
+			if (( attempt_index < spa_acp_hifi_retry_count )); then
+				sleep "${spa_acp_hifi_retry_sleep_seconds}"
+			else
+				:
+			fi
+			attempt_index=$((attempt_index + 1))
+		fi
+	done
+	printf '%s\n' "${tool_output_text}"
+	return 0  # last probe text; caller records pass or fail
 }
 
 # Require the overlay UCM Headset device, and HiFi capture mapping when
@@ -664,19 +834,18 @@ check_headset_ucm() {
 		report_fail "headset-ucm-acp" "${expected_hd_audio_long_name} card not present"
 		return 0  # recorded as fail
 	fi
-	if verbose_text="$(
-		ALSA_CONFIG_UCM2="${ucm2_merged_directory}" \
-			"${spa_acp_tool_path}" -c "${hd_audio_card_number}" list-verbose 2>&1
-	)"; then
-		:
-	else
-		verbose_text="spa-acp-tool exited non-zero: ${verbose_text}"
-	fi
+	verbose_text="$(
+		spa_acp_tool_run_with_overlay \
+			"${spa_acp_tool_path}" \
+			"${hd_audio_card_number}" \
+			"list-verbose" \
+			"${required_headset_ucm_device_name}"
+	)"
 	if [[ "${verbose_text}" == *"${required_headset_ucm_device_name}"* ]]; then
 		report_pass "headset-ucm-acp" "spa-acp-tool lists ${required_headset_ucm_device_name} on card ${hd_audio_card_number}"
 		return 0  # UCM Headset reached ACP
 	else
-		report_fail "headset-ucm-acp" "spa-acp-tool has no ${required_headset_ucm_device_name} on card ${hd_audio_card_number} (restart the session PipeWire stack after install)"
+		report_fail "headset-ucm-acp" "spa-acp-tool has no ${required_headset_ucm_device_name} on card ${hd_audio_card_number} after ${spa_acp_hifi_retry_count} probes (close GNOME Settings if it holds the analog PCM, then re-run)"
 		return 0  # recorded as fail
 	fi
 }
@@ -705,6 +874,42 @@ check_headset_unit_watch() {
 		fi
 	else
 		report_fail "headset-unit-watch" "${headset_unit_file_name} missing under /etc/systemd/system"
+		return 0  # recorded as fail
+	fi
+}
+
+# Require the installed pin script to apply CTIA with HP Out, and to
+# omit kernel mic-in (that path turned pin 0x21 off).
+check_headset_ctia_script() {
+	local headset_script_path=""
+	local headset_script_text=""
+	if headset_script_path="$(
+		path_first_readable_file \
+			"${installed_headset_script_on_host}" \
+			"${installed_headset_script_from_container}"
+	)"; then
+		file_read_queue_enqueue "${headset_script_path}"
+		file_read_queue_drain
+		headset_script_text="${file_read_queue_contents[${headset_script_path}]:-}"
+		if [[ "${headset_script_text}" == *"${required_headset_ctia_coef_snippet}"* ]]; then
+			report_pass "headset-ctia-coef" "${headset_script_path} sets ${required_headset_ctia_coef_snippet}"
+		else
+			report_fail "headset-ctia-coef" "${headset_script_path} is missing ${required_headset_ctia_coef_snippet}; reinstall so a plugged jack stays CTIA"
+		fi
+		if [[ "${headset_script_text}" == *"${required_headset_hp_out_snippet}"* ]]; then
+			report_pass "headset-hp-out" "${headset_script_path} sets ${required_headset_hp_out_snippet}"
+		else
+			report_fail "headset-hp-out" "${headset_script_path} is missing ${required_headset_hp_out_snippet}; reinstall so pin 0x21 stays HP Out"
+		fi
+		if [[ "${headset_script_text}" == *"${forbidden_headset_mic_in_function_snippet}"* ]]; then
+			report_fail "headset-no-mic-in" "${headset_script_path} still defines ${forbidden_headset_mic_in_function_snippet}; reinstall so leftover mic-in cannot silence 2-ring headphones"
+			return 0  # recorded as fail
+		else
+			report_pass "headset-no-mic-in" "${headset_script_path} does not define ${forbidden_headset_mic_in_function_snippet}"
+			return 0  # installed pin script is always-CTIA with HP Out
+		fi
+	else
+		report_fail "headset-ctia-coef" "apply-headset-pins.sh missing under /var/lib/alsa/sf514-audio"
 		return 0  # recorded as fail
 	fi
 }
@@ -776,14 +981,13 @@ check_spa_acp_card_hifi() {
 		report_fail "spa-acp-tool ${wanted_long_name}" "card not present"
 		return 0  # recorded as fail
 	fi
-	if profiles_text="$(
-		ALSA_CONFIG_UCM2="${ucm2_merged_directory}" \
-			"${spa_acp_tool_path}" -c "${card_number}" list-profiles 2>&1
-	)"; then
-		:
-	else
-		profiles_text="spa-acp-tool exited non-zero: ${profiles_text}"
-	fi
+	profiles_text="$(
+		spa_acp_tool_run_with_overlay \
+			"${spa_acp_tool_path}" \
+			"${card_number}" \
+			"list-profiles" \
+			"HiFi"
+	)"
 	if [[ "${profiles_text}" == *"HiFi"* ]]; then
 		report_pass "spa-acp-tool ${wanted_long_name}" "HiFi profile present on card ${card_number}"
 		return 0  # UCM is being picked up
@@ -792,7 +996,7 @@ check_spa_acp_card_hifi() {
 			report_skip "spa-acp-tool ${wanted_long_name}" "no HiFi yet (connect HDMI/DP and re-run); profiles: ${profiles_text}"
 			return 0  # HDMI jack may be absent
 		else
-			report_fail "spa-acp-tool ${wanted_long_name}" "no HiFi profile (still stereo-fallback?). ${profiles_text}"
+			report_fail "spa-acp-tool ${wanted_long_name}" "no HiFi profile after ${spa_acp_hifi_retry_count} probes (close GNOME Settings if it holds the PCM). ${profiles_text}"
 			return 0  # recorded as fail
 		fi
 	fi
@@ -982,7 +1186,7 @@ check_wpctl_status_note() {
 	local wpctl_path
 	local wpctl_status_text
 	log_info "NOTE  wpctl volume 1.00 on the AVS DMIC is expected; extra gain is WirePlumber linear Mult=8.0 inside the node."
-	log_info "NOTE  Analog headset capture needs Front Headphone Jack on and Headset Microphone selected. A 3-ring CTIA mic can stay plugged; the watch unit keeps CTIA (0x45=0xd489). Extra analog gain is ADC +12 dB plus WirePlumber Mult=4.0. Raw analog PCM is S32_LE."
+	log_info "NOTE  Analog headset capture needs Front Headphone Jack on and Headset Microphone selected. A 3-ring CTIA mic can stay plugged; the watch unit keeps CTIA (0x45=0xd489) with pin 0x21 HP Out so 2-ring headphones still play. An empty jack leaves pin 0x19 at 0x20 (VREF_HIZ) because unplugged UAJ gates MIC2 Vref. A 2-ring analog mic is not compatible. Extra analog gain is ADC +12 dB plus WirePlumber Mult=4.0. Raw analog PCM is S32_LE."
 	if wpctl_path="$(path_find_executable wpctl)"; then
 		if wpctl_status_text="$("${wpctl_path}" status 2>&1)"; then
 			log_info "NOTE  wpctl status (informational, not a pass/fail):"

@@ -15,7 +15,7 @@ the same layer works on Fedora Atomic and on a mutable distro.
 | Area | Tree | Status |
 | --- | --- | --- |
 | Audio (Intel AVS + Realtek ALC255) | [`scripts-audio-fix/`](scripts-audio-fix/) | shipped |
-| Fingerprint (EgisTec 1c7a:0570) | [`scripts-fingerprint-fix/`](scripts-fingerprint-fix/) | shipped |
+| Fingerprint (EgisTec 1c7a:0570) | [`scripts-fingerprint-fix/`](scripts-fingerprint-fix/) | WIP — not tested yet |
 
 New work goes in a new `scripts-<area>-fix/` directory. Do not dump
 unrelated fixes into `scripts-audio-fix/`.
@@ -94,6 +94,21 @@ would yield index `-1`.
 `verify.sh` does the same before raw `arecord`. Extra loudness is
 the WirePlumber linear filters in [Capture gain](#capture-gain).
 
+### What works
+
+Live on this chassis with this overlay:
+
+| Path | Result |
+| --- | --- |
+| Speakers | playback works |
+| 3.5 mm 2-ring headphones | playback works (HP pin stays on) |
+| 3.5 mm 3-ring CTIA headset mic | capture works on **Headset Microphone** |
+| Internal AVS DMIC | capture works (`Mult = 8.0`) |
+| HDMI / DisplayPort | playback works |
+
+A 2-ring analog **microphone** on this combo jack is
+[not compatible](#analog-plugin-mic-35-mm).
+
 ### Install
 
 On the **host**. From distrobox the installer re-execs with
@@ -114,14 +129,17 @@ Install will:
    and remove the session user's home copies of those same filenames
    so the gain is applied once.
 3. Enable the overlay mount and the headset-mic verb unit.
-4. Stop the session PipeWire stack (including sockets) so the analog
-   PCM is closed.
+4. Bounce the session PipeWire **services** (WirePlumber,
+   pipewire-pulse, pipewire) with `--job-mode=replace-irreversibly`
+   and `--no-warn`. Sockets stay up: stopping `pipewire.socket` in
+   the same transaction as the service lets GNOME cancel the job.
 5. Run ALC255 hwdep verbs: D0 on the analog path, pin `0x19`
-   IN+VREF_80, unmute analog ADC path at +12 dB, headset pin
-   default, then CTIA if Front Headphone Jack is on. Never write
-   sysfs `reconfig` (oopses on AVS). The unit stays running,
-   debounces the jack, and keeps CTIA applied while the mic stays
-   plugged (including across reboot).
+   IN+VREF_80 after CTIA, unmute analog ADC path at +12 dB, headset
+   pin default, then CTIA with pin `0x21` HP Out if Front Headphone
+   Jack is on. An empty jack leaves pin `0x19` at `0x20` (VREF_HIZ).
+   Never write sysfs `reconfig` (oopses on AVS). The unit stays
+   running, debounces the jack, and keeps CTIA applied while a
+   3-ring mic stays plugged (including across reboot).
 6. Restart PipeWire / WirePlumber with `ALSA_CONFIG_UCM2` set.
 
 You do not need `options snd_soc_avs obsolete_card_names=1`.
@@ -137,17 +155,22 @@ overlay path.
 
 `scripts-audio-fix/verify.sh` discovers cards from `/proc/asound/cards`.
 It does not assume card numbers 1, 2, 3, and it does not treat
-`wpctl status` as a pass.
+`wpctl status` as a pass. From distrobox it re-execs on the host
+so `spa-acp-tool` sees the overlay.
 
 After a successful install:
 
 - Overlay readable at `/var/lib/alsa/ucm2/merged`
 - Long names `AVS HD-Audio`, `AVS DMIC`, `AVS HDMI` (not `hdaudioB0D2`)
-- Node `0x19` Pin-ctls `0x24` (IN VREF_80) on the ALC255 codec dump
+- Node `0x19` Pin-ctls `0x24` (IN VREF_80) when Front Headphone Jack
+  is on; `0x20` (IN VREF_HIZ) when the jack is empty (unplugged UAJ
+  gates MIC2 Vref)
+- Node `0x21` Pin-ctls `0xc0` (HP Out; leftover mic-in turns this off)
 - Analog capture PCM `pcm0c` on `AVS HD-Audio`
 - UCM `Headset` device (spa-acp-tool lists it under HiFi)
 - Headset unit `ExecStart` includes `--watch` (debounces Front
-  Headphone Jack and keeps CTIA applied)
+  Headphone Jack and keeps CTIA with HP Out)
+- Installed pin script applies CTIA `0xd489` and has no mic-in path
 - `spa-acp-tool -c <n> list-profiles` shows **HiFi** on HD-Audio and
   DMIC, not only `stereo-fallback`
 - A non-silent WAV from
@@ -157,13 +180,15 @@ After a successful install:
   Headset `Mult = 4.0`)
 - no home copies of those 51-54 filenames (they would stack with `/etc`)
 
-Then, as a user: default sink is analog Speaker; plugging headphones
-switches port. Analog capture is S32_LE. HDMI/DP playback reaches
-the display.
+Then, as a user: default sink is analog Speaker; plugging 2-ring
+headphones switches port and plays. Analog capture is S32_LE.
+HDMI/DP playback reaches the display.
 
 - A **3-ring CTIA mic** can stay plugged all the time. Select
   **Headset Microphone** as the input. The watch unit applies CTIA
   at boot and after a plug, and re-applies it if the codec drifts.
+- A **2-ring analog microphone** is not compatible (see
+  [Analog plugin mic](#analog-plugin-mic-35-mm)).
 - The real internal mic is AVS DMIC.
 
 Kernel lines `Endpoint format configuration not found` during ACP probe
@@ -190,15 +215,21 @@ filenames, reloads systemd, and restarts PipeWire. Other
 
 ### Analog plugin mic (3.5 mm)
 
-The combo jack on this Swift is a **CTIA TRRS (3-ring)** headset
-mic. That is the plug that captured on SUSE bug 1213187 under
-`snd-hda-intel` (`model=1025:1330`), and it is the plug that
-captures here under `snd_soc_avs`. Leave it inserted; the watch
-unit keeps the codec in CTIA across reboot and session audio
-restarts. In GNOME, select **Headset Microphone**.
+The combo jack on this Swift takes a **CTIA TRRS (3-ring)**
+headset mic. That is the plug that captured on SUSE bug 1213187
+under `snd-hda-intel` (`model=1025:1330`), and it is the plug
+that captures here under `snd_soc_avs`. Leave it inserted; the
+watch unit keeps the codec in CTIA across reboot and session
+audio restarts. In GNOME, select **Headset Microphone**.
 
-A 2-ring (TRS) plug did not capture on this AVS path. Headphones
-(playback only) already work with the stock mixer.
+**2-ring headphones** (TRS, playback only) use the same plugged
+CTIA path. Pin `0x21` stays HP Out (`0xc0`), so those speakers
+play.
+
+A **2-ring analog microphone** on this jack is **not compatible**.
+A Galaxy A25 on Android 16 also does not detect that plug as a
+mic. There is no report of anyone getting this 2-ring analog
+mic to work on Linux. Failed overlay attempts are listed below.
 
 #### Why the kernel quirk never runs
 
@@ -217,10 +248,10 @@ writes that sysfs file. It programs the live codec through
 
 | Node | Role on this chassis |
 | --- | --- |
-| `0x19` | Combo-jack headset mic. Pin default `0x03a11130`. Pin-ctls `0x24` (IN + VREF_80). Amp-In max `0x7003`. |
-| `0x1a` | Second analog mic pin, still BIOS N/A. Unused. |
-| `0x21` | Headphone out. OUT-only pincap; it cannot be an ADC. |
-| `0x22` / `0x23` | ADC muxes. Connection index 1 is pin `0x19`. |
+| `0x19` | Combo-jack headset mic. Pin default `0x03a11130`. Pin-ctls `0x24` (IN + VREF_80) with a 3-ring CTIA plug; `0x20` (IN VREF_HIZ) while the jack is empty. Amp-In max `0x7003`. Mixer index 1. |
+| `0x1a` | Second analog mic pin, still BIOS N/A. Unused. Kept off. |
+| `0x21` | Headphone out. OUT-only pincap; it cannot be an ADC. Stays HP Out `0xc0` while the jack is present. |
+| `0x22` / `0x23` | ADC muxes. Connection index 1 is pin `0x19`. Index 2 (pin `0x1a`) stays muted. |
 | `0x08` / `0x09` | Analog ADCs that feed `HDAudio Analog`. Amp-In ofs `0x17` is 0 dB (0.75 dB/step). |
 | `0x20` / `0x57` | Vendor / COEFEX. Universal Audio Jack lives here. |
 
@@ -241,12 +272,13 @@ never sees a replug. `sf514-alc255-headset.service` is
 #### Universal Audio Jack (the load-bearing finding)
 
 Working capture is **always CTIA**. Vendor coefficient `0x45`
-must stay `0xd489` while the jack is present.
+must stay `0xd489` while the jack is present, and pin `0x21`
+must stay HP Out `0xc0`.
 
-| State | `0x45` | `0x1b` | COEFEX `0x57/0x03` | MIC2 Vref `0x06` |
-| --- | --- | --- | --- | --- |
-| Unplugged | `0xd089` | `0x0c0b` | `0x8aa6` | `0x6104` (gated) |
-| CTIA (3-ring) | `0xd489` | `0x0c2b` | `0x8ea6` | `0x6100` (ungated) |
+| State | `0x45` | `0x1b` | Pin `0x21` | COEFEX `0x57/0x03` | MIC2 Vref `0x06` |
+| --- | --- | --- | --- | --- | --- |
+| Unplugged | `0xd089` | `0x0c0b` | HP Out `0xc0` | `0x8aa6` | `0x6104` (gated) |
+| CTIA (3-ring, and 2-ring headphones) | `0xd489` | `0x0c2b` | HP Out `0xc0` | `0x8ea6` | `0x6100` (ungated) |
 
 The kernel ALC255 type probe (`0x45=0xd089`, `0x49=0x0149`, 300 ms,
 then `(0x46 & 0x0070) == 0x0070` for CTIA else OMTP) is unstable
@@ -264,6 +296,33 @@ So a present Front Headphone Jack always gets the CTIA sequence
 above. Headphone playback is ignored. The type probe is not
 used. `--watch` re-applies CTIA if `0x45` drifts (PipeWire
 start, reboot with the mic already in).
+
+OMTP (`0xe489`) is not used: it silenced 3-ring capture.
+
+#### Two-ring analog mic (not compatible)
+
+This chassis quirk is `NO_HP_MIC`: pin `0x21` is OUT-only, so
+the in-tree Realtek driver never selects mic-in by itself.
+Public ALC255 combo-jack reports, including the 2023 HDA
+write-up for this laptop, are 4-pole CTIA headset mics.
+
+The 2-ring analog microphone that was tried here also fails
+on a Galaxy A25 (Android 16 recorder). There is no known
+Linux success report for that plug on this jack.
+
+These overlay attempts did not capture voice. Several of
+them also broke 2-ring **headphone** playback, so they are
+not shipped:
+
+| Attempt | Result |
+| --- | --- |
+| CTIA on the 2-ring plug (`0x45=0xd489`, pin `0x19` VREF_80) | left-channel sleeve hiss (about −38 dBFS RMS, ZCR ~0.53); right near silence |
+| `PIN_VREFGRD` `0x22` on pin `0x19` | silent (grounds the electret) |
+| `PIN_VREF50` `0x21` on pin `0x19` after `0xc489` | silent (mixers still listened to index 1) |
+| Pin `0x1a` IN+VREF_80, mixer index 2 | stereo white noise (left=right, about −20 dBFS, ZCR ~0.65); PC Beep / 1Ah loopback |
+| Pin `0x1a` IN+VREF_50 plus coef `0x36=0x5757` | still noise |
+| Kernel `alc_headset_mode_mic_in` (`0x45=0xc489`, HP pin off) | still no voice; **turned pin `0x21` off and silenced 2-ring headphones** |
+| `0x46` type probe plus a CTIA hiss check | treated 2-ring **headphones** as mic-in (same left-loud hiss signature) and applied HP-off |
 
 #### Format and volume
 
@@ -304,7 +363,8 @@ another value, edit `Mult` in 52 (DMIC) or 54 (Headset) and re-run
 - Generic AVS topology (`hda-generic-tplg.bin`). No custom firmware.
 - Headset mic is hwdep verbs on pin `0x19`, not sysfs `reconfig`
   (that oopses on this AVS codec).
-- Analog Headset Mic is a CTIA TRRS (3-ring) plug. Details are in
+- Analog Headset Mic is a CTIA TRRS (3-ring) plug. A 2-ring analog
+  microphone is not compatible. Details are in
   [Analog plugin mic](#analog-plugin-mic-35-mm). Capture multipliers
   are in [Capture gain](#capture-gain).
 - Overlay + `ALSA_CONFIG_UCM2` only affects processes with that
@@ -323,6 +383,10 @@ another value, edit `Mult` in 52 (DMIC) or 54 (Headset) and re-run
   `wpctl` stays at 1.00; the boost is inside the node.
 
 ## Fingerprint (EgisTec 1c7a:0570)
+
+**WIP — not tested yet.** The overlay and installer are in the
+tree. Enroll, verify, and login have not been proven on this
+chassis.
 
 The pad below the arrow keys is USB `1c7a:0570` (serial `W70D612F`). Fedora
 already ships libfprint's `egis0570` driver, so `fprintd-list` sees the
