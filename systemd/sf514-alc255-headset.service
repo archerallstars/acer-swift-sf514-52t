@@ -13,6 +13,9 @@ RemainAfterExit=yes
 # denied, status 203/EXEC). /usr/bin/bash is shell_exec_t and reads
 # the script as data.
 ExecStart=/usr/bin/bash /var/lib/alsa/sf514-audio/apply-headset-pins.sh
+# Writing hwC*D0/reconfig tears down that sysfs node. The writer is
+# often SIGKILL'd after the kernel has already applied the pin.
+SuccessExitStatus=SIGKILL
 
 [Install]
 WantedBy=multi-user.target

@@ -31,7 +31,7 @@ dmic_nonzero_sample_scan_bytes="8192"
 # Live 'DMIC Volume' boots at 0 (silence). Raw arecord does not go
 # through ACP, so verify raises this control before capturing.
 dmic_mixer_control_name="DMIC Volume"
-dmic_verify_volume_percent="70"
+dmic_verify_volume_percent="100"
 
 # --- Overlay paths: host first, then distrobox's view of the host ---
 ucm2_merged_directory_on_host="/var/lib/alsa/ucm2/merged"
@@ -196,9 +196,9 @@ path_find_executable() {
 # Set ucm2_merged_directory to the overlay merge that contains this
 # machine's AVS UCM files, or leave it empty when the overlay is absent.
 path_resolve_ucm2_merged_directory() {
-	if [[ -e "${ucm2_merged_directory_on_host}/${overlay_ucm_hd_audio_relative_path}" ]]; then
+	if [[ -s "${ucm2_merged_directory_on_host}/${overlay_ucm_hd_audio_relative_path}" ]]; then
 		ucm2_merged_directory="${ucm2_merged_directory_on_host}"
-	elif [[ -e "${ucm2_merged_directory_from_container}/${overlay_ucm_hd_audio_relative_path}" ]]; then
+	elif [[ -s "${ucm2_merged_directory_from_container}/${overlay_ucm_hd_audio_relative_path}" ]]; then
 		ucm2_merged_directory="${ucm2_merged_directory_from_container}"
 	else
 		ucm2_merged_directory=""
@@ -394,6 +394,7 @@ check_dmic_capture() {
 	local dmic_card_id
 	local wav_file_size_bytes
 	local nonzero_sample_line_count
+	local arecord_error_text=""
 	if arecord_path="$(path_find_executable arecord)"; then
 		:
 	else
@@ -407,18 +408,28 @@ check_dmic_capture() {
 		return 0  # recorded as fail
 	fi
 	check_dmic_apply_volume "${dmic_card_id}"
-	if "${arecord_path}" \
+	if arecord_error_text="$("${arecord_path}" \
 		-D "hw:${dmic_card_id},0" \
 		-r "${dmic_capture_rate}" \
 		-c "${dmic_capture_channels}" \
 		-f "${dmic_capture_format}" \
 		-d "${dmic_capture_duration_seconds}" \
-		"${dmic_wav_path}"
+		"${dmic_wav_path}" \
+		2>&1)"
 	then
-		:
+		if [[ -n "${arecord_error_text}" ]]; then
+			printf '%s\n' "${arecord_error_text}"
+		else
+			:
+		fi
 	else
-		report_fail "dmic-capture" "arecord failed (device busy or format rejected)"
-		return 0  # recorded as fail
+		if [[ "${arecord_error_text}" == *"Device or resource busy"* ]]; then
+			report_skip "dmic-capture" "hw:${dmic_card_id},0 is busy (close GNOME Settings capture meters and re-run)"
+			return 0  # PipeWire already holds the PCM
+		else
+			report_fail "dmic-capture" "arecord failed: ${arecord_error_text}"
+			return 0  # recorded as fail
+		fi
 	fi
 	if [[ ! -f "${dmic_wav_path}" ]]; then
 		report_fail "dmic-capture" "WAV was not created at ${dmic_wav_path}"

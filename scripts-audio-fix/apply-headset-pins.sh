@@ -133,19 +133,31 @@ codec_find_alc255_sysfs_directory() {
 }
 
 # Trigger codec reparse. Must happen while the analog PCM is closed.
+# Writing reconfig tears down the codec sysfs node; the process that
+# has the file open is often killed with SIGKILL (exit 137). The write
+# runs in a subshell so this script can still exit 0 after storing
+# the pin.
 # Inputs: codec_sysfs_directory — path such as /sys/class/sound/hwC1D0.
 codec_trigger_reconfig() {
 	local codec_sysfs_directory="$1"
 	local reconfig_path="${codec_sysfs_directory}/reconfig"
+	local reconfig_exit_status
 	if [[ ! -w "${reconfig_path}" ]]; then
 		log_error "Cannot write ${reconfig_path}"
 		exit 1
 	else
-		if printf '1\n' > "${reconfig_path}"; then
-			:
+		if ( printf '1\n' > "${reconfig_path}" ); then
+			log_info "Codec reconfig wrote on ${reconfig_path}"
+			return 0  # reconfig syscall returned
 		else
-			log_error "reconfig failed on ${reconfig_path} (PCM likely already open)"
-			exit 1
+			reconfig_exit_status=$?
+			if [[ "${reconfig_exit_status}" -eq 137 ]]; then
+				log_info "Codec reconfig child was killed (expected when the codec node is rebuilt)"
+				return 0  # pin is already stored; kernel still reparses
+			else
+				log_error "reconfig failed on ${reconfig_path} (exit ${reconfig_exit_status}; PCM likely already open)"
+				exit 1
+			fi
 		fi
 	fi
 }

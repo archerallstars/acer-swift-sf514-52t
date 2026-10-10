@@ -93,6 +93,7 @@ main() {
 	path_resolve_session_user_name
 	host_verify_repository_files
 	host_verify_overlay_mount_unit_escape
+	host_stop_overlay_mount_if_active
 	directory_create_overlay_paths
 	file_io_queue_drain
 	directory_reset_known_overlay_files
@@ -274,7 +275,10 @@ directory_create_overlay_paths() {
 }
 
 # Queue removal of the UCM paths this overlay owns so a reinstall does
-# not leave stale files. Drain is done by main before the copy phase.
+# not leave stale files. The overlay mount must be stopped first:
+# overlayfs keeps nlink-0 directories if upper trees are deleted and
+# recreated while the merge is mounted. Drain is done by main before
+# the copy phase.
 directory_reset_known_overlay_files() {
 	file_io_queue_enqueue \
 		"${ucm2_upper_directory}/Intel/avs/avs_hdaudio" \
@@ -429,6 +433,20 @@ host_restart_headset_unit() {
 		systemctl status "${headset_unit_name}" --no-pager --full || true
 		journalctl -u "${headset_unit_name}" -n 20 --no-pager || true
 		return 1  # caller restores PipeWire then exits
+	fi
+}
+
+# Unmount the UCM overlay so a reinstall can replace upper-dir files.
+# overlayfs keeps stale nlink-0 directories if those trees are deleted
+# and recreated while the merge is mounted. spa-acp-tool then sees
+# empty dirs at ALSA_CONFIG_UCM2 and drops HiFi.
+host_stop_overlay_mount_if_active() {
+	if systemctl stop "${overlay_mount_unit_name}"; then
+		log_info "Stopped ${overlay_mount_unit_name} so the upper dir can be rewritten"
+		return 0  # merge is unmounted
+	else
+		log_info "${overlay_mount_unit_name} was not running"
+		return 0  # nothing to unmount
 	fi
 }
 

@@ -29,9 +29,9 @@ root `AGENTS.md`.
   `codecs/hda/hdmi.conf` uses `index=${eval:($__Number-1)}`. Number 0
   yields IEC958 index `-1`.
 - DMIC: PCM `hw:${CardId},0`, `CaptureChannels 2`, `CaptureRate 48000`,
-  mixer `DMIC`. Live `DMIC Volume` boots at 0 (silence); keep an
-  EnableSequence (currently 70%) and have verify raise the same control
-  before raw `arecord`.
+  mixer `DMIC`. Live `DMIC Volume` boots at 0 (silence). Keep
+  EnableSequence at 100% (ALSA max of the raw integer control) and
+  have verify raise the same control before raw `arecord`.
 
 ## Headset pin
 
@@ -46,12 +46,18 @@ its argument. The script lives under `/var/lib/alsa/`
 that type (status 203/EXEC). bash is `shell_exec_t` and
 reads the script as data.
 
+Writing `reconfig` tears down `hwC*D0`; the writer is often
+SIGKILL'd after the pin is stored. The script runs that write
+in a subshell and the unit sets `SuccessExitStatus=SIGKILL`.
+
 ## Install / uninstall / verify
 
 - Layer with overlayfs under `/var/lib/alsa/ucm2/{upper,work,merged}`
   and `ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2/merged`. Never copy UCM into
   `/usr/share/alsa/ucm2`. The merged path must systemd-escape to
   `var-lib-alsa-ucm2-merged.mount` (no hyphen in the last component).
+  Stop the overlay mount before deleting or recopying upper trees;
+  overlayfs otherwise keeps empty nlink-0 dirs in the merge.
 - Relabel installed unit files with `restorecon`. `cp -a` from the
   user's home leaves `user_home_t`, and systemd cannot read that.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +

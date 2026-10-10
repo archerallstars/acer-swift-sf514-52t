@@ -85,8 +85,10 @@ HDMI `Number` values are 1, 2, 3. Distro `codecs/hda/hdmi.conf`
 programs `IEC958 Playback Switch` at `index = Number - 1`. Number 0
 would yield index `-1`.
 
-`DMIC Volume` boots at 0% (digital silence). UCM raises it to 70% when
-HiFi enables; `verify.sh` does the same before raw `arecord`.
+`DMIC Volume` boots at 0% (digital silence). UCM raises it to 100%
+(the ALSA max of that raw integer control) when HiFi enables;
+`verify.sh` does the same before raw `arecord`. Session volume above
+100% is PipeWire amplification in GNOME.
 
 ### Install
 
@@ -177,8 +179,8 @@ layers are left alone.
   add a DMI match for Swift SF514-52T.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
   on PR 571.
-- DMIC gain: raise or lower the 70% `DMIC Volume` EnableSequence after
-  listening on this chassis.
+- DMIC gain: the EnableSequence is 100% of the raw ALSA control.
+  Further loudness is PipeWire volume above 100% in GNOME.
 
 ## Fingerprint (EgisTec 1c7a:0570)
 
