@@ -66,9 +66,10 @@ Distro UCM still matches the old card long names, so PipeWire stays on
 ACP stereo-fallback.
 
 ```
-scripts-audio-fix/     install, uninstall, verify, headset pin reconfig
-ucm2/                  AVS HD-Audio, AVS DMIC, AVS HDMI (new long names)
-systemd/               overlayfs mount, pin unit, PipeWire drop-ins
+scripts-audio-fix/              install, uninstall, verify, headset pin reconfig
+scripts-audio-fix/wireplumber/  51 soft-mixer + 52 linear Mult=4.0 on AVS DMIC
+ucm2/                          AVS HD-Audio, AVS DMIC, AVS HDMI (new long names)
+systemd/                       overlayfs mount, pin unit, PipeWire drop-ins
 ```
 
 (`ucm2/` and `systemd/` at the repo root belong to this audio fix.
@@ -87,8 +88,12 @@ would yield index `-1`.
 
 `DMIC Volume` boots at 0% (digital silence). UCM raises it to 100%
 (the ALSA max of that raw integer control) when HiFi enables;
-`verify.sh` does the same before raw `arecord`. Session volume above
-100% is PipeWire amplification in GNOME.
+`verify.sh` does the same before raw `arecord`. Extra capture gain
+is a WirePlumber builtin linear filter (`Mult = 4.0`, about +12 dB)
+on nodes matching `alsa_input.*avs_dmic.*`. GNOME Settings and
+`wpctl` keep showing volume 1.00 on this source; the boost is inside
+the node. The GNOME over-amplification setting applies to speaker
+output.
 
 ### Install
 
@@ -104,11 +109,15 @@ Install will:
 
 1. Create `/var/lib/alsa/ucm2/{upper,work,merged}` and copy `ucm2/`
    into the upper dir (conf.d symlinks preserved).
-2. Enable the overlay mount and the headset pin unit.
-3. Stop the session PipeWire stack (including sockets) so the analog
+2. Copy WirePlumber 51/52 fragments to
+   `/etc/wireplumber/wireplumber.conf.d/` (`api.alsa.soft-mixer` and
+   linear `Mult = 4.0`) and remove the session user's home copies of
+   those same filenames so the gain is applied once.
+3. Enable the overlay mount and the headset pin unit.
+4. Stop the session PipeWire stack (including sockets) so the analog
    PCM is closed.
-4. Reconfig ALC255 pin `0x19` to `0x03a11130`.
-5. Restart PipeWire / WirePlumber with `ALSA_CONFIG_UCM2` set.
+5. Reconfig ALC255 pin `0x19` to `0x03a11130`.
+6. Restart PipeWire / WirePlumber with `ALSA_CONFIG_UCM2` set.
 
 You do not need `options snd_soc_avs obsolete_card_names=1`.
 
@@ -134,6 +143,9 @@ After a successful install:
   DMIC, not only `stereo-fallback`
 - A non-silent WAV from
   `arecord -D hw:DMIC,0 -r 48000 -c 2 -f S16_LE -d 3`
+- `/etc/wireplumber/wireplumber.conf.d/51-sf514-dmic-soft-mixer.conf`
+  and `52-sf514-dmic-gain.conf` present (`Mult = 4.0`)
+- no home copies of those 51/52 filenames (they would stack with `/etc`)
 
 Then, as a user: default sink is analog Speaker; plugging headphones
 switches port; a CTIA headset exposes analog Mic; HDMI/DP playback
@@ -155,9 +167,10 @@ sudo ./scripts-audio-fix/uninstall.sh
 ```
 
 That stops and disables the units this fix enabled, unmounts the
-overlay, deletes the files it copied into `/etc` and `/var/lib/alsa`,
-reloads systemd, and restarts PipeWire. Other `scripts-<area>-fix`
-layers are left alone.
+overlay, deletes the files it copied into `/etc` and `/var/lib/alsa`
+(including the WirePlumber 51/52 DMIC fragments), reloads systemd,
+and restarts PipeWire. Other `scripts-<area>-fix` layers are left
+alone.
 
 ### Limits (audio v1)
 
@@ -180,7 +193,9 @@ layers are left alone.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
   on PR 571.
 - DMIC gain: the EnableSequence is 100% of the raw ALSA control.
-  Further loudness is PipeWire volume above 100% in GNOME.
+  Extra loudness is WirePlumber linear `Mult = 4.0` on the AVS DMIC
+  capture node (`scripts-audio-fix/wireplumber/`). `wpctl` stays at
+  1.00; the boost is inside the node.
 
 ## Fingerprint (EgisTec 1c7a:0570)
 

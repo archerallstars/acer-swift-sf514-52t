@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Check that AVS audio on the Acer Swift SF514-52T is using this repo's
-# UCM overlay. Discovers cards from /proc/asound/cards (does not assume
-# card numbers 1/2/3). Does not treat wpctl status as a pass by itself.
+# UCM overlay and the WirePlumber DMIC gain fragments. Discovers cards
+# from /proc/asound/cards (does not assume card numbers 1/2/3). Does
+# not treat wpctl status as a pass by itself.
 
 set -euo pipefail
 
@@ -37,6 +38,17 @@ dmic_verify_volume_percent="100"
 ucm2_merged_directory_on_host="/var/lib/alsa/ucm2/merged"
 ucm2_merged_directory_from_container="/run/host/var/lib/alsa/ucm2/merged"
 overlay_ucm_hd_audio_relative_path="conf.d/avs_hdaudio/AVS HD-Audio.conf"
+
+# --- WirePlumber system conf.d fragments for AVS DMIC extra gain.
+#     Home copies of the same filenames stack with /etc and apply
+#     Mult=4.0 twice. ---
+wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
+wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
+installed_wireplumber_conf_directory_on_host="/etc/wireplumber/wireplumber.conf.d"
+installed_wireplumber_conf_directory_from_container="/run/host/etc/wireplumber/wireplumber.conf.d"
+session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.conf.d"
+required_dmic_soft_mixer_snippet="api.alsa.soft-mixer = true"
+required_dmic_gain_multiplier_snippet="Mult = 4.0"
 
 # --- Kernel / sysfs locations ---
 proc_asound_cards_path="/proc/asound/cards"
@@ -79,6 +91,7 @@ main() {
 	check_alsaucm_dump
 	check_spa_acp_hifi
 	check_dmic_capture
+	check_wireplumber_dmic_fragments
 	check_wpctl_status_note
 	check_kernel_avs_note
 	report_summarize
@@ -190,6 +203,22 @@ path_find_executable() {
 			fi
 		done
 		return 1  # executable_name is not installed
+	fi
+}
+
+# Print the first readable path among two candidates, or return 1.
+# Inputs: first_candidate_path, second_candidate_path.
+path_first_readable_file() {
+	local first_candidate_path="$1"
+	local second_candidate_path="$2"
+	if [[ -r "${first_candidate_path}" ]]; then
+		echo "${first_candidate_path}"
+		return 0  # host path is readable
+	elif [[ -r "${second_candidate_path}" ]]; then
+		echo "${second_candidate_path}"
+		return 0  # container view of the host path is readable
+	else
+		return 1  # neither path is readable
 	fi
 }
 
@@ -645,10 +674,77 @@ check_spa_acp_hifi() {
 	fi
 }
 
+# Require the system WirePlumber 51/52 fragments with the proven DMIC
+# soft-mixer and linear Mult=4.0 settings. Home copies of the same
+# filenames fail the check because they would stack with /etc.
+check_wireplumber_dmic_fragments() {
+	local system_soft_mixer_path=""
+	local system_gain_path=""
+	local session_home_directory="${HOME:-}"
+	local home_soft_mixer_path="${session_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_soft_mixer_file_name}"
+	local home_gain_path="${session_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_gain_file_name}"
+	local soft_mixer_text=""
+	local gain_text=""
+	if system_soft_mixer_path="$(
+		path_first_readable_file \
+			"${installed_wireplumber_conf_directory_on_host}/${wireplumber_dmic_soft_mixer_file_name}" \
+			"${installed_wireplumber_conf_directory_from_container}/${wireplumber_dmic_soft_mixer_file_name}"
+	)"; then
+		file_read_queue_enqueue "${system_soft_mixer_path}"
+	else
+		system_soft_mixer_path=""
+		report_fail "wireplumber-dmic-soft-mixer" "${wireplumber_dmic_soft_mixer_file_name} missing under ${installed_wireplumber_conf_directory_on_host}"
+	fi
+	if system_gain_path="$(
+		path_first_readable_file \
+			"${installed_wireplumber_conf_directory_on_host}/${wireplumber_dmic_gain_file_name}" \
+			"${installed_wireplumber_conf_directory_from_container}/${wireplumber_dmic_gain_file_name}"
+	)"; then
+		file_read_queue_enqueue "${system_gain_path}"
+	else
+		system_gain_path=""
+		report_fail "wireplumber-dmic-gain" "${wireplumber_dmic_gain_file_name} missing under ${installed_wireplumber_conf_directory_on_host}"
+	fi
+	file_read_queue_drain
+	if [[ -n "${system_soft_mixer_path}" ]]; then
+		soft_mixer_text="${file_read_queue_contents[${system_soft_mixer_path}]}"
+		if [[ "${soft_mixer_text}" == *"${required_dmic_soft_mixer_snippet}"* ]]; then
+			report_pass "wireplumber-dmic-soft-mixer" "${system_soft_mixer_path} sets ${required_dmic_soft_mixer_snippet}"
+		else
+			report_fail "wireplumber-dmic-soft-mixer" "${system_soft_mixer_path} is missing ${required_dmic_soft_mixer_snippet}"
+		fi
+	else
+		:
+	fi
+	if [[ -n "${system_gain_path}" ]]; then
+		gain_text="${file_read_queue_contents[${system_gain_path}]}"
+		if [[ "${gain_text}" == *"${required_dmic_gain_multiplier_snippet}"* ]]; then
+			report_pass "wireplumber-dmic-gain" "${system_gain_path} sets ${required_dmic_gain_multiplier_snippet}"
+		else
+			report_fail "wireplumber-dmic-gain" "${system_gain_path} is missing ${required_dmic_gain_multiplier_snippet}"
+		fi
+	else
+		:
+	fi
+	if [[ -z "${session_home_directory}" ]]; then
+		report_skip "wireplumber-dmic-home-copy" "HOME is unset; cannot check for stacked fragments"
+		return 0  # system fragment results already recorded
+	elif [[ -e "${home_soft_mixer_path}" || -e "${home_gain_path}" ]]; then
+		report_fail "wireplumber-dmic-home-copy" "home copies of 51/52 would stack with /etc; delete ${home_soft_mixer_path} and ${home_gain_path}"
+		return 0  # recorded as fail
+	else
+		report_pass "wireplumber-dmic-home-copy" "no home copies of ${wireplumber_dmic_soft_mixer_file_name} or ${wireplumber_dmic_gain_file_name}"
+		return 0  # system fragments are the only copies
+	fi
+}
+
 # Print wpctl status as a note. Never records a pass from this output.
+# Volume 1.00 on the AVS DMIC is expected; extra gain is the
+# WirePlumber linear Mult=4.0 filter inside the capture node.
 check_wpctl_status_note() {
 	local wpctl_path
 	local wpctl_status_text
+	log_info "NOTE  wpctl volume 1.00 on the AVS DMIC is expected; extra gain is WirePlumber linear Mult=4.0 inside the node."
 	if wpctl_path="$(path_find_executable wpctl)"; then
 		if wpctl_status_text="$("${wpctl_path}" status 2>&1)"; then
 			log_info "NOTE  wpctl status (informational, not a pass/fail):"

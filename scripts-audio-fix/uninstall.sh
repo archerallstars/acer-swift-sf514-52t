@@ -2,9 +2,10 @@
 # Remove the Acer Swift SF514-52T AVS audio overlay from Fedora Atomic.
 #
 # Stops the headset reconfig unit and the UCM overlay mount, deletes
-# the files this repo installed under /etc and /var, and restarts the
-# session PipeWire stack. Idempotent: a second run is a successful no-op
-# aside from the session audio restart. Must run as root on the host.
+# the files this repo installed under /etc and /var (including the
+# WirePlumber DMIC gain fragments), and restarts the session PipeWire
+# stack. Idempotent: a second run is a successful no-op aside from
+# the session audio restart. Must run as root on the host.
 
 set -euo pipefail
 
@@ -28,6 +29,13 @@ installed_wireplumber_dropin_directory="/etc/systemd/user/wireplumber.service.d"
 installed_pipewire_dropin_path="/etc/systemd/user/pipewire.service.d/sf514-ucm.conf"
 installed_wireplumber_dropin_path="/etc/systemd/user/wireplumber.service.d/sf514-ucm.conf"
 installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
+
+# --- WirePlumber system conf.d fragments installed for AVS DMIC gain ---
+wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
+wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
+installed_wireplumber_conf_directory="/etc/wireplumber/wireplumber.conf.d"
+installed_wireplumber_dmic_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_soft_mixer_file_name}"
+installed_wireplumber_dmic_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_gain_file_name}"
 
 # --- systemd unit names ---
 overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
@@ -205,6 +213,8 @@ host_disable_overlay_mount() {
 }
 
 # Queue rmdir of drop-in directories after their files are already gone.
+# /etc/wireplumber/wireplumber.conf.d is removed only when it has no
+# remaining fragments from other packages.
 host_enqueue_empty_directory_cleanup() {
 	file_io_queue_enqueue \
 		"${installed_pipewire_dropin_directory}" \
@@ -213,6 +223,10 @@ host_enqueue_empty_directory_cleanup() {
 	file_io_queue_enqueue \
 		"${installed_wireplumber_dropin_directory}" \
 		"${installed_wireplumber_dropin_directory}" \
+		"remove-empty-directory"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_conf_directory}" \
+		"${installed_wireplumber_conf_directory}" \
 		"remove-empty-directory"
 }
 
@@ -237,6 +251,14 @@ host_enqueue_uninstall_removes() {
 	file_io_queue_enqueue \
 		"${installed_environment_dropin_path}" \
 		"${installed_environment_dropin_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_dmic_soft_mixer_path}" \
+		"${installed_wireplumber_dmic_soft_mixer_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_dmic_gain_path}" \
+		"${installed_wireplumber_dmic_gain_path}" \
 		"remove-path"
 	file_io_queue_enqueue \
 		"${installed_audio_directory}" \

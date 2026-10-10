@@ -2,10 +2,12 @@
 # Install the Acer Swift SF514-52T AVS audio overlay on Fedora Atomic.
 #
 # Copies this repo's UCM tree into an overlayfs upper dir under /var,
-# installs the headset-mic pin reconfig unit, and points PipeWire /
-# WirePlumber at the merged UCM tree via ALSA_CONFIG_UCM2. /usr is
-# never modified. Must run as root on the host (re-execs via
-# distrobox-host-exec when started inside a container).
+# installs the headset-mic pin reconfig unit, points PipeWire /
+# WirePlumber at the merged UCM tree via ALSA_CONFIG_UCM2, and
+# installs WirePlumber conf.d fragments that apply 4x linear capture
+# gain on the AVS DMIC. /usr is never modified. Must run as root on
+# the host (re-execs via distrobox-host-exec when started inside a
+# container).
 
 set -euo pipefail
 
@@ -14,8 +16,9 @@ set -euo pipefail
 # =============================================================================
 
 # --- Repo layout. Audio scripts live in scripts-audio-fix/. Payload
-#     for this fix is still the repo-root ucm2/ and systemd/ trees.
-#     Other out-of-tree fixes use their own scripts-<area>-fix/. ---
+#     for this fix is the repo-root ucm2/ and systemd/ trees, plus
+#     scripts-audio-fix/wireplumber/ for DMIC gain fragments. Other
+#     out-of-tree fixes use their own scripts-<area>-fix/. ---
 repository_audio_scripts_directory_name="scripts-audio-fix"
 
 # --- Overlayfs merge of distro ucm2 (lower) plus this machine's files.
@@ -42,6 +45,21 @@ installed_environment_dropin_directory="/etc/environment.d"
 installed_pipewire_dropin_path="/etc/systemd/user/pipewire.service.d/sf514-ucm.conf"
 installed_wireplumber_dropin_path="/etc/systemd/user/wireplumber.service.d/sf514-ucm.conf"
 installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
+
+# --- WirePlumber system conf.d fragments for AVS DMIC extra
+#     capture gain. 51 turns on api.alsa.soft-mixer. 52 applies
+#     a builtin linear filter with Mult=4.0 (about +12 dB). Both
+#     match alsa_input.*avs_dmic.* and were proven on this
+#     chassis. Home copies of the same filenames must be removed
+#     on install so /etc and ~/.config do not both apply
+#     the multiplier. ---
+repository_wireplumber_conf_directory_name="wireplumber"
+wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
+wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
+installed_wireplumber_conf_directory="/etc/wireplumber/wireplumber.conf.d"
+installed_wireplumber_dmic_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_soft_mixer_file_name}"
+installed_wireplumber_dmic_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_gain_file_name}"
+session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.conf.d"
 
 # --- systemd unit names (must match the installed file names) ---
 overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
@@ -82,9 +100,10 @@ log_info() {
 # ENTRY POINT
 # =============================================================================
 
-# Install overlay dirs, UCM files, systemd units, and session drop-ins,
-# then reconfig the ALC255 headset pin while the user audio stack is
-# stopped. Exits 0 on success, 1 on failure.
+# Install overlay dirs, UCM files, systemd units, session drop-ins,
+# and WirePlumber DMIC gain fragments, then reconfig the ALC255
+# headset pin while the user audio stack is stopped. Exits 0 on
+# success, 1 on failure.
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
@@ -102,6 +121,8 @@ main() {
 	file_io_queue_drain
 	host_enqueue_selinux_restore
 	file_io_queue_drain
+	session_enqueue_home_dmic_fragment_removes
+	file_io_queue_drain
 	host_reload_systemd_daemon
 	host_enable_overlay_mount
 	host_enable_headset_unit
@@ -115,6 +136,7 @@ main() {
 	fi
 	session_start_user_audio
 	log_info "Install complete. Overlay is at ${ucm2_merged_directory}."
+	log_info "WirePlumber DMIC gain fragments are in ${installed_wireplumber_conf_directory} (Mult=4.0)."
 	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and DMIC."
 }
 
@@ -240,8 +262,9 @@ file_io_queue_enqueue() {
 # DIRECTORY HELPERS
 # =============================================================================
 
-# Queue creation of the overlayfs upper, work, and merged directories
-# plus the directory that holds the installed pin-reconfig script.
+# Queue creation of the overlayfs upper, work, and merged directories,
+# the directory that holds the installed pin-reconfig script, session
+# drop-in directories, and /etc/wireplumber/wireplumber.conf.d.
 directory_create_overlay_paths() {
 	file_io_queue_enqueue \
 		"${ucm2_upper_directory}" \
@@ -270,6 +293,10 @@ directory_create_overlay_paths() {
 	file_io_queue_enqueue \
 		"${installed_environment_dropin_directory}" \
 		"${installed_environment_dropin_directory}" \
+		"create-directory"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_conf_directory}" \
+		"${installed_wireplumber_conf_directory}" \
 		"create-directory"
 	log_info "Queued overlay directories under /var/lib/alsa"
 }
@@ -345,7 +372,8 @@ host_enable_overlay_mount() {
 }
 
 # Queue copies of the UCM tree, pin script, mount unit, headset unit,
-# PipeWire/WirePlumber drop-ins, and environment.d file.
+# PipeWire/WirePlumber drop-ins, environment.d file, and WirePlumber
+# DMIC soft-mixer plus linear-gain fragments.
 host_enqueue_install_copies() {
 	file_io_queue_enqueue \
 		"${repository_root_directory}/ucm2" \
@@ -375,6 +403,14 @@ host_enqueue_install_copies() {
 		"${repository_root_directory}/systemd/50-sf514-alsa-ucm.conf" \
 		"${installed_environment_dropin_path}" \
 		"copy-file"
+	file_io_queue_enqueue \
+		"${repository_root_directory}/${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_soft_mixer_file_name}" \
+		"${installed_wireplumber_dmic_soft_mixer_path}" \
+		"copy-file"
+	file_io_queue_enqueue \
+		"${repository_root_directory}/${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_gain_file_name}" \
+		"${installed_wireplumber_dmic_gain_path}" \
+		"copy-file"
 }
 
 # Relabel installed units and scripts so systemd can read them. Copies
@@ -399,6 +435,10 @@ host_enqueue_selinux_restore() {
 	file_io_queue_enqueue \
 		"${installed_environment_dropin_path}" \
 		"${installed_environment_dropin_path}" \
+		"restore-selinux-context"
+	file_io_queue_enqueue \
+		"${installed_wireplumber_conf_directory}" \
+		"${installed_wireplumber_conf_directory}" \
 		"restore-selinux-context"
 	file_io_queue_enqueue \
 		"${installed_audio_directory}" \
@@ -507,6 +547,8 @@ host_verify_repository_files() {
 		"systemd/var-lib-alsa-ucm2-merged.mount"
 		"systemd/sf514-ucm.conf"
 		"systemd/50-sf514-alsa-ucm.conf"
+		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_soft_mixer_file_name}"
+		"${repository_audio_scripts_directory_name}/${repository_wireplumber_conf_directory_name}/${wireplumber_dmic_gain_file_name}"
 	)
 	local relative_path
 	local verification_process_ids=()
@@ -609,6 +651,42 @@ path_resolve_session_user_name() {
 # =============================================================================
 # SESSION AUDIO HELPERS
 # =============================================================================
+
+# Queue deletion of the session user's home copies of the 51 and 52
+# WirePlumber fragments. /etc and ~/.config fragments both apply, so
+# leaving the home copies would run Mult=4.0 twice (16x).
+session_enqueue_home_dmic_fragment_removes() {
+	local session_user_home_directory=""
+	local session_home_dmic_soft_mixer_path
+	local session_home_dmic_gain_path
+	if [[ -z "${resolved_session_user_name}" ]]; then
+		log_info "No session user; skip removing home WirePlumber DMIC fragments"
+		return 0  # no home directory to clean
+	else
+		if command -v getent >/dev/null 2>&1; then
+			session_user_home_directory="$(getent passwd "${resolved_session_user_name}" | cut -d: -f6)"
+		else
+			session_user_home_directory="$(awk -F: -v session_user_name="${resolved_session_user_name}" '$1 == session_user_name { print $6; exit }' /etc/passwd)"
+		fi
+		if [[ -z "${session_user_home_directory}" ]]; then
+			log_info "No home directory for ${resolved_session_user_name}; skip home WirePlumber fragment removal"
+			return 0  # cannot find the home copies
+		else
+			session_home_dmic_soft_mixer_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_soft_mixer_file_name}"
+			session_home_dmic_gain_path="${session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_gain_file_name}"
+			file_io_queue_enqueue \
+				"${session_home_dmic_soft_mixer_path}" \
+				"${session_home_dmic_soft_mixer_path}" \
+				"remove-path"
+			file_io_queue_enqueue \
+				"${session_home_dmic_gain_path}" \
+				"${session_home_dmic_gain_path}" \
+				"remove-path"
+			log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name} and ${wireplumber_dmic_gain_file_name} so the multiplier applies once"
+			return 0  # home copies queued for deletion
+		fi
+	fi
+}
 
 # Reload the session owner's systemd user daemon so drop-ins apply.
 session_reload_user_systemd() {

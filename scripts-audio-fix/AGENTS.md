@@ -1,9 +1,10 @@
 # Agent instructions — audio fix
 
 Load-bearing rules for `scripts-audio-fix/`, plus the repo-root
-`ucm2/` and `systemd/` trees that this fix still owns. Changing these
-without a live check on this chassis will break UCM matching or HDMI
-IEC958.
+`ucm2/` and `systemd/` trees and `scripts-audio-fix/wireplumber/`
+that this fix still owns. Changing these without a live check
+on this chassis will break UCM matching, HDMI IEC958, or DMIC
+gain.
 
 User-facing steps: `README.md` (Audio section). Repo-wide layering:
 root `AGENTS.md`.
@@ -18,6 +19,9 @@ root `AGENTS.md`.
   enough for analog playback.
 - Move `ucm2/` or `systemd/` without updating
   `scripts-audio-fix/install.sh` and `uninstall.sh` in the same change.
+- Leave matching 51/52 WirePlumber fragments in the session user's
+  `~/.config/wireplumber/wireplumber.conf.d/` after install. Those
+  stack with `/etc` and apply `Mult = 4.0` twice.
 - Touch fingerprint or other `scripts-<area>-fix` trees from an audio
   task.
 
@@ -31,7 +35,14 @@ root `AGENTS.md`.
 - DMIC: PCM `hw:${CardId},0`, `CaptureChannels 2`, `CaptureRate 48000`,
   mixer `DMIC`. Live `DMIC Volume` boots at 0 (silence). Keep
   EnableSequence at 100% (ALSA max of the raw integer control) and
-  have verify raise the same control before raw `arecord`.
+  have verify raise the same control before raw `arecord`. Extra
+  capture gain is WirePlumber `node.filter-graph.rules` with builtin
+  linear `Mult = 4.0` on `~alsa_input.*avs_dmic.*`, plus
+  `api.alsa.soft-mixer = true`. Those fragments live in
+  `scripts-audio-fix/wireplumber/` and install under
+  `/etc/wireplumber/wireplumber.conf.d/` as 51 and 52. Delete the
+  session user's home copies of the same names on install.
+  `wpctl` remaining at 1.00 on this source is expected.
 
 ## Headset pin
 
@@ -60,13 +71,18 @@ in a subshell and the unit sets `SuccessExitStatus=SIGKILL`.
   overlayfs otherwise keeps empty nlink-0 dirs in the merge.
 - Relabel installed unit files with `restorecon`. `cp -a` from the
   user's home leaves `user_home_t`, and systemd cannot read that.
+- Install WirePlumber 51/52 under `/etc/wireplumber/wireplumber.conf.d/`
+  and delete the session user's home copies of those filenames.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +
-  `disable` the audio units, delete those unit files and drop-ins,
-  unmount the UCM overlay, reload systemd, restart the session
-  PipeWire stack.
+  `disable` the audio units, delete those unit files, drop-ins, and
+  WirePlumber 51/52 fragments, unmount the UCM overlay, reload
+  systemd, restart the session PipeWire stack.
 - `verify.sh` must not treat `wpctl status` as a pass. Discover cards
   from `/proc/asound/cards`. Require HiFi from `spa-acp-tool` when the
-  overlay is mounted.
+  overlay is mounted. Require the 51/52 fragments under
+  `/etc/wireplumber/wireplumber.conf.d/` (`Mult = 4.0`). A leftover
+  home copy of those filenames is a fail. `wpctl` volume 1.00 on the
+  DMIC is expected.
 
 ## Out of v1 unless the user asks
 
