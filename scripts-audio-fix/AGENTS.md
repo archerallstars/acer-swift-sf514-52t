@@ -42,9 +42,12 @@ BIOS leaves pin `0x19` as `0x411111f0`. The boot unit writes
 
 ## Install / uninstall / verify
 
-- Layer with overlayfs under `/var/lib/alsa/` and
-  `ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2-merged`. Never copy UCM into
-  `/usr/share/alsa/ucm2`.
+- Layer with overlayfs under `/var/lib/alsa/ucm2/{upper,work,merged}`
+  and `ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2/merged`. Never copy UCM into
+  `/usr/share/alsa/ucm2`. The merged path must systemd-escape to
+  `var-lib-alsa-ucm2-merged.mount` (no hyphen in the last component).
+- Relabel installed unit files with `restorecon`. `cp -a` from the
+  user's home leaves `user_home_t`, and systemd cannot read that.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +
   `disable` the audio units, delete those unit files and drop-ins,
   unmount the UCM overlay, reload systemd, restart the session

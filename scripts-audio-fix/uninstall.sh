@@ -13,10 +13,12 @@ set -euo pipefail
 # =============================================================================
 
 # --- Overlayfs directories created by install.sh ---
-ucm2_upper_directory="/var/lib/alsa/ucm2-upper"
-ucm2_work_directory="/var/lib/alsa/ucm2-work"
-ucm2_merged_directory="/var/lib/alsa/ucm2-merged"
+ucm2_overlay_root_directory="/var/lib/alsa/ucm2"
 installed_audio_directory="/var/lib/alsa/sf514-audio"
+# Hyphenated sibling dirs from the first install attempt.
+legacy_ucm2_upper_directory="/var/lib/alsa/ucm2-upper"
+legacy_ucm2_work_directory="/var/lib/alsa/ucm2-work"
+legacy_ucm2_merged_directory="/var/lib/alsa/ucm2-merged"
 
 # --- Installed unit and drop-in paths ---
 installed_headset_unit_path="/etc/systemd/system/sf514-alc255-headset.service"
@@ -241,16 +243,20 @@ host_enqueue_uninstall_removes() {
 		"${installed_audio_directory}" \
 		"remove-path"
 	file_io_queue_enqueue \
-		"${ucm2_upper_directory}" \
-		"${ucm2_upper_directory}" \
+		"${ucm2_overlay_root_directory}" \
+		"${ucm2_overlay_root_directory}" \
 		"remove-path"
 	file_io_queue_enqueue \
-		"${ucm2_work_directory}" \
-		"${ucm2_work_directory}" \
+		"${legacy_ucm2_upper_directory}" \
+		"${legacy_ucm2_upper_directory}" \
 		"remove-path"
 	file_io_queue_enqueue \
-		"${ucm2_merged_directory}" \
-		"${ucm2_merged_directory}" \
+		"${legacy_ucm2_work_directory}" \
+		"${legacy_ucm2_work_directory}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${legacy_ucm2_merged_directory}" \
+		"${legacy_ucm2_merged_directory}" \
 		"remove-path"
 }
 

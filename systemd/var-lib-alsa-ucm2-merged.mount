@@ -4,15 +4,18 @@ DefaultDependencies=no
 After=local-fs.target
 Before=sound.target multi-user.target
 ConditionPathIsDirectory=/usr/share/alsa/ucm2
-ConditionPathIsDirectory=/var/lib/alsa/ucm2-upper
-ConditionPathIsDirectory=/var/lib/alsa/ucm2-work
-ConditionPathIsDirectory=/var/lib/alsa/ucm2-merged
+ConditionPathIsDirectory=/var/lib/alsa/ucm2/upper
+ConditionPathIsDirectory=/var/lib/alsa/ucm2/work
+ConditionPathIsDirectory=/var/lib/alsa/ucm2/merged
 
 [Mount]
 What=overlay
-Where=/var/lib/alsa/ucm2-merged
+# Path must systemd-escape to this file's name
+# (var-lib-alsa-ucm2-merged.mount). A hyphen in the last component
+# (ucm2-merged) would require \x2d in the unit name.
+Where=/var/lib/alsa/ucm2/merged
 Type=overlay
-Options=lowerdir=/usr/share/alsa/ucm2,upperdir=/var/lib/alsa/ucm2-upper,workdir=/var/lib/alsa/ucm2-work
+Options=lowerdir=/usr/share/alsa/ucm2,upperdir=/var/lib/alsa/ucm2/upper,workdir=/var/lib/alsa/ucm2/work
 
 [Install]
 WantedBy=multi-user.target

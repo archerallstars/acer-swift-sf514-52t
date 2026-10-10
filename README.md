@@ -77,7 +77,7 @@ tree.)
 
 On an immutable `/usr`, install merges this UCM over
 `/usr/share/alsa/ucm2` with overlayfs under `/var/lib/alsa/` and sets
-`ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2-merged` on PipeWire and
+`ALSA_CONFIG_UCM2=/var/lib/alsa/ucm2/merged` on PipeWire and
 WirePlumber. On a mutable root the same overlay is used, so the
 installer never writes `/usr`.
 
@@ -100,7 +100,7 @@ sudo ./scripts-audio-fix/install.sh
 
 Install will:
 
-1. Create `/var/lib/alsa/ucm2-{upper,work,merged}` and copy `ucm2/`
+1. Create `/var/lib/alsa/ucm2/{upper,work,merged}` and copy `ucm2/`
    into the upper dir (conf.d symlinks preserved).
 2. Enable the overlay mount and the headset pin unit.
 3. Stop the session PipeWire stack (including sockets) so the analog
@@ -110,6 +110,11 @@ Install will:
 
 You do not need `options snd_soc_avs obsolete_card_names=1`.
 
+Unit files are copied with `install` and relabeled with `restorecon`
+so Fedora Enforcing can load them. A re-run of install.sh also removes
+leftover `/var/lib/alsa/ucm2-{upper,work,merged}` directories from the
+first overlay path.
+
 ### Verify
 
 `scripts-audio-fix/verify.sh` discovers cards from `/proc/asound/cards`.
@@ -118,7 +123,7 @@ It does not assume card numbers 1, 2, 3, and it does not treat
 
 After a successful install:
 
-- Overlay readable at `/var/lib/alsa/ucm2-merged`
+- Overlay readable at `/var/lib/alsa/ucm2/merged`
 - Long names `AVS HD-Audio`, `AVS DMIC`, `AVS HDMI` (not `hdaudioB0D2`)
 - Pin `0x19` = `0x03a11130` on the ALC255 codec sysfs node
 - `spa-acp-tool -c <n> list-profiles` shows **HiFi** on HD-Audio and

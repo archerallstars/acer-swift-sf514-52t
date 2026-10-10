@@ -34,8 +34,8 @@ dmic_mixer_control_name="DMIC Volume"
 dmic_verify_volume_percent="70"
 
 # --- Overlay paths: host first, then distrobox's view of the host ---
-ucm2_merged_directory_on_host="/var/lib/alsa/ucm2-merged"
-ucm2_merged_directory_from_container="/run/host/var/lib/alsa/ucm2-merged"
+ucm2_merged_directory_on_host="/var/lib/alsa/ucm2/merged"
+ucm2_merged_directory_from_container="/run/host/var/lib/alsa/ucm2/merged"
 overlay_ucm_hd_audio_relative_path="conf.d/avs_hdaudio/AVS HD-Audio.conf"
 
 # --- Kernel / sysfs locations ---
