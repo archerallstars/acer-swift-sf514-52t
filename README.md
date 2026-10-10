@@ -49,10 +49,13 @@ internal DMIC, and HDMI / DisplayPort under `snd_soc_avs`.
 
 [Kernel bug 219654](https://bugzilla.kernel.org/show_bug.cgi?id=219654) ·
 [SUSE bug 1213187](https://bugzilla.suse.com/show_bug.cgi?id=1213187) ·
+[alsa-ucm-conf#871](https://github.com/alsa-project/alsa-ucm-conf/pull/871) ·
 [alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571)
 
-This overlay does not wait for that UCM pull request to merge, and it
-does not set `obsolete_card_names=1`.
+[#871](https://github.com/alsa-project/alsa-ucm-conf/pull/871) is this
+chassis's renamed-card UCM (AVS HD-Audio / DMIC / HDMI, including
+Headset on analog `pcm0c`). This overlay does not wait for that pull
+request to merge, and it does not set `obsolete_card_names=1`.
 
 | | |
 | --- | --- |
@@ -378,7 +381,7 @@ another value, edit `Mult` in 52 (DMIC) or 54 (Headset) and re-run
   table as `ALC255_FIXUP_ACER_HEADSET_MIC`, and make
   `snd_hda_codec_reset` safe on ASoC-bound codecs.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
-  on PR 571.
+  on [alsa-ucm-conf#871](https://github.com/alsa-project/alsa-ucm-conf/pull/871).
 - DMIC and analog Headset gain: see [Capture gain](#capture-gain).
   `wpctl` stays at 1.00; the boost is inside the node.
 

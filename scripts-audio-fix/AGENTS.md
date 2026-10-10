@@ -12,8 +12,9 @@ root `AGENTS.md`.
 ## Do not
 
 - Set `options snd_soc_avs obsolete_card_names=1`.
-- Wait on [alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571)
-  or ship its unused I2S codec UCMs.
+- Wait on [alsa-ucm-conf#871](https://github.com/alsa-project/alsa-ucm-conf/pull/871)
+  or [alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571),
+  or ship #571's unused I2S codec UCMs.
 - Combine the three ALSA cards into one UCM profile.
 - Add custom AVS topology firmware. Generic `hda-generic-tplg.bin` is
   enough for analog playback.
