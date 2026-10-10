@@ -104,6 +104,7 @@ main() {
 	host_reload_systemd_daemon
 	host_enable_overlay_mount
 	host_enable_headset_unit
+	session_reload_user_systemd
 	session_stop_user_audio
 	if host_restart_headset_unit; then
 		:
@@ -111,7 +112,6 @@ main() {
 		session_start_user_audio
 		exit 1
 	fi
-	session_reload_user_systemd
 	session_start_user_audio
 	log_info "Install complete. Overlay is at ${ucm2_merged_directory}."
 	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and DMIC."
@@ -425,7 +425,9 @@ host_restart_headset_unit() {
 		log_info "Applied ALC255 headset pin reconfig"
 		return 0  # codec reconfig succeeded
 	else
-		log_error "Headset reconfig failed. Analog PCM was likely still open."
+		log_error "Headset reconfig failed (see unit status below)"
+		systemctl status "${headset_unit_name}" --no-pager --full || true
+		journalctl -u "${headset_unit_name}" -n 20 --no-pager || true
 		return 1  # caller restores PipeWire then exits
 	fi
 }

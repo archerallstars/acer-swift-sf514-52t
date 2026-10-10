@@ -40,6 +40,12 @@ BIOS leaves pin `0x19` as `0x411111f0`. The boot unit writes
 `reconfig`. That must run while the analog PCM is closed
 (`Before=sound.target`; install stops PipeWire sockets first).
 
+The boot unit runs `/usr/bin/bash` with the pin script as
+its argument. The script lives under `/var/lib/alsa/`
+(`alsa_var_lib_t`). systemd (`init_t`) is denied execute on
+that type (status 203/EXEC). bash is `shell_exec_t` and
+reads the script as data.
+
 ## Install / uninstall / verify
 
 - Layer with overlayfs under `/var/lib/alsa/ucm2/{upper,work,merged}`

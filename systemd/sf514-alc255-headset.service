@@ -9,7 +9,10 @@ ConditionPathExists=/sys/class/sound
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/var/lib/alsa/sf514-audio/apply-headset-pins.sh
+# init_t cannot execute a file labeled alsa_var_lib_t (Permission
+# denied, status 203/EXEC). /usr/bin/bash is shell_exec_t and reads
+# the script as data.
+ExecStart=/usr/bin/bash /var/lib/alsa/sf514-audio/apply-headset-pins.sh
 
 [Install]
 WantedBy=multi-user.target

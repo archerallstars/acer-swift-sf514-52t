@@ -111,9 +111,11 @@ Install will:
 You do not need `options snd_soc_avs obsolete_card_names=1`.
 
 Unit files are copied with `install` and relabeled with `restorecon`
-so Fedora Enforcing can load them. A re-run of install.sh also removes
-leftover `/var/lib/alsa/ucm2-{upper,work,merged}` directories from the
-first overlay path.
+so Fedora Enforcing can load them. The headset unit runs the pin
+script through `/usr/bin/bash` because systemd cannot execute a file
+labeled `alsa_var_lib_t`. A re-run of install.sh also removes leftover
+`/var/lib/alsa/ucm2-{upper,work,merged}` directories from the first
+overlay path.
 
 ### Verify
 
