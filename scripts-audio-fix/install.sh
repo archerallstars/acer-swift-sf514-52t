@@ -5,7 +5,7 @@
 # installs the analog headset-mic verb unit (polls Front Headphone Jack),
 # points PipeWire / WirePlumber at the merged UCM tree via
 # ALSA_CONFIG_UCM2, and installs WirePlumber conf.d fragments that
-# apply 4x linear capture gain on the AVS DMIC and analog Headset.
+# apply 8x linear capture gain on the AVS DMIC and 4x on analog Headset.
 # /usr is never modified. Must run as root on the host (re-execs via
 # distrobox-host-exec when started inside a container).
 
@@ -49,7 +49,7 @@ installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
 installed_headset_udev_rule_path="/etc/udev/rules.d/70-sf514-alc255-headset.rules"
 
 # --- WirePlumber system conf.d fragments for extra capture gain.
-#     51/52 are AVS DMIC (alsa_input.*avs_dmic.*, Mult=4.0). 53/54
+#     51/52 are AVS DMIC (alsa_input.*avs_dmic.*, Mult=8.0). 53/54
 #     are analog Headset (alsa_input.*avs_hdaudio.*Headset.*,
 #     S32LE / 24-bit plus Mult=4.0). Home copies of the same
 #     filenames must be removed on install so /etc and ~/.config
@@ -142,7 +142,7 @@ main() {
 		exit 1
 	fi
 	log_info "Install complete. Overlay is at ${ucm2_merged_directory}."
-	log_info "WirePlumber DMIC 51/52 and analog Headset 53/54 gain fragments are in ${installed_wireplumber_conf_directory} (Mult=4.0)."
+	log_info "WirePlumber DMIC 51/52 (Mult=8.0) and analog Headset 53/54 (Mult=4.0) gain fragments are in ${installed_wireplumber_conf_directory}."
 	log_info "Run ${repository_audio_scripts_directory_name}/verify.sh as your regular user to check UCM and capture."
 	log_info "Analog headset capture needs a plugged jack (Front Headphone on) and Headset Microphone as the input. A 3-ring CTIA mic can stay plugged across reboot; the watch unit keeps CTIA applied."
 }
@@ -689,7 +689,7 @@ path_resolve_session_user_name() {
 
 # Queue deletion of the session user's home copies of the 51-54
 # WirePlumber fragments. /etc and ~/.config fragments both apply, so
-# leaving the home copies would run Mult=4.0 twice (16x).
+# leaving the home copies would run each multiplier twice.
 session_enqueue_home_dmic_fragment_removes() {
 	local session_user_home_directory=""
 	local session_home_dmic_soft_mixer_path

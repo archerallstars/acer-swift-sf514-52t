@@ -46,7 +46,7 @@ overlay_ucm_hd_audio_relative_path="conf.d/avs_hdaudio/AVS HD-Audio.conf"
 
 # --- WirePlumber system conf.d fragments for AVS DMIC (51/52) and
 #     analog Headset (53/54) extra gain. Home copies of the same
-#     filenames stack with /etc and apply Mult=4.0 twice. ---
+#     filenames stack with /etc and apply each multiplier twice. ---
 wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
 wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
 wireplumber_headset_soft_mixer_file_name="53-sf514-headset-soft-mixer.conf"
@@ -61,11 +61,13 @@ installed_headset_unit_on_host="/etc/systemd/system/sf514-alc255-headset.service
 installed_headset_unit_from_container="/run/host/etc/systemd/system/sf514-alc255-headset.service"
 required_headset_unit_watch_snippet="--watch"
 required_dmic_soft_mixer_snippet="api.alsa.soft-mixer = true"
-required_dmic_gain_multiplier_snippet="Mult = 4.0"
+required_dmic_gain_multiplier_snippet="Mult = 8.0"
 # 53 also requires S32LE / 24-bit so GNOME does not open analog capture
-# as S16 (that path looks empty on this AVS PCM).
+# as S16 (that path looks empty on this AVS PCM). Headset gain stays
+# at the proven analog Mult=4.0.
 required_headset_audio_format_snippet='audio.format = "S32LE"'
 required_headset_resolution_bits_snippet="alsa.resolution_bits = 24"
+required_headset_gain_multiplier_snippet="Mult = 4.0"
 
 # --- Kernel / sysfs locations ---
 proc_asound_cards_path="/proc/asound/cards"
@@ -836,7 +838,7 @@ check_spa_acp_hifi() {
 }
 
 # Require the system WirePlumber 51/52 fragments with the proven DMIC
-# soft-mixer and linear Mult=4.0 settings. Home copies of the same
+# soft-mixer and linear Mult=8.0 settings. Home copies of the same
 # filenames fail the check because they would stack with /etc.
 check_wireplumber_dmic_fragments() {
 	local system_soft_mixer_path=""
@@ -953,10 +955,10 @@ check_wireplumber_headset_fragments() {
 	fi
 	if [[ -n "${system_gain_path}" ]]; then
 		gain_text="${file_read_queue_contents[${system_gain_path}]}"
-		if [[ "${gain_text}" == *"${required_dmic_gain_multiplier_snippet}"* ]]; then
-			report_pass "wireplumber-headset-gain" "${system_gain_path} sets ${required_dmic_gain_multiplier_snippet}"
+		if [[ "${gain_text}" == *"${required_headset_gain_multiplier_snippet}"* ]]; then
+			report_pass "wireplumber-headset-gain" "${system_gain_path} sets ${required_headset_gain_multiplier_snippet}"
 		else
-			report_fail "wireplumber-headset-gain" "${system_gain_path} is missing ${required_dmic_gain_multiplier_snippet}"
+			report_fail "wireplumber-headset-gain" "${system_gain_path} is missing ${required_headset_gain_multiplier_snippet}"
 		fi
 	else
 		:
@@ -975,11 +977,11 @@ check_wireplumber_headset_fragments() {
 
 # Print wpctl status as a note. Never records a pass from this output.
 # Volume 1.00 on the AVS DMIC is expected; extra gain is the
-# WirePlumber linear Mult=4.0 filter inside the capture node.
+# WirePlumber linear Mult=8.0 filter inside the capture node.
 check_wpctl_status_note() {
 	local wpctl_path
 	local wpctl_status_text
-	log_info "NOTE  wpctl volume 1.00 on the AVS DMIC is expected; extra gain is WirePlumber linear Mult=4.0 inside the node."
+	log_info "NOTE  wpctl volume 1.00 on the AVS DMIC is expected; extra gain is WirePlumber linear Mult=8.0 inside the node."
 	log_info "NOTE  Analog headset capture needs Front Headphone Jack on and Headset Microphone selected. A 3-ring CTIA mic can stay plugged; the watch unit keeps CTIA (0x45=0xd489). Extra analog gain is ADC +12 dB plus WirePlumber Mult=4.0. Raw analog PCM is S32_LE."
 	if wpctl_path="$(path_find_executable wpctl)"; then
 		if wpctl_status_text="$("${wpctl_path}" status 2>&1)"; then

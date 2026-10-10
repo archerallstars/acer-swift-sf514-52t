@@ -66,10 +66,11 @@ so analog mic pins stay BIOS N/A. Distro UCM still matches the old
 card long names, so PipeWire stays on ACP stereo-fallback. Analog
 headset capture is HDA hwdep verbs plus UCM `Headset`; live findings
 for the 3.5 mm plug are in [Analog plugin mic](#analog-plugin-mic-35-mm).
+Proven capture multipliers are in [Capture gain](#capture-gain).
 
 ```
 scripts-audio-fix/              install, uninstall, verify, headset-mic hwdep verbs
-scripts-audio-fix/wireplumber/  51/52 AVS DMIC + 53/54 analog Headset (Mult=4.0)
+scripts-audio-fix/wireplumber/  51/52 AVS DMIC Mult=8.0 + 53/54 analog Headset Mult=4.0
 ucm2/                          AVS HD-Audio, AVS DMIC, AVS HDMI (new long names)
 systemd/                       overlayfs mount, headset-mic verb unit, PipeWire drop-ins
 ```
@@ -90,12 +91,8 @@ would yield index `-1`.
 
 `DMIC Volume` boots at 0% (digital silence). UCM raises it to 100%
 (the ALSA max of that raw integer control) when HiFi enables;
-`verify.sh` does the same before raw `arecord`. Extra capture gain
-is a WirePlumber builtin linear filter (`Mult = 4.0`, about +12 dB)
-on nodes matching `alsa_input.*avs_dmic.*`. GNOME Settings and
-`wpctl` keep showing volume 1.00 on this source; the boost is inside
-the node. The GNOME over-amplification setting applies to speaker
-output.
+`verify.sh` does the same before raw `arecord`. Extra loudness is
+the WirePlumber linear filters in [Capture gain](#capture-gain).
 
 ### Install
 
@@ -113,9 +110,9 @@ Install will:
    into the upper dir (conf.d symlinks preserved).
 2. Copy WirePlumber 51-54 fragments to
    `/etc/wireplumber/wireplumber.conf.d/` (`api.alsa.soft-mixer` and
-   linear `Mult = 4.0` on DMIC and analog Headset) and remove the
-   session user's home copies of those same filenames so the gain is
-   applied once.
+   linear `Mult = 8.0` on DMIC and `Mult = 4.0` on analog Headset)
+   and remove the session user's home copies of those same filenames
+   so the gain is applied once.
 3. Enable the overlay mount and the headset-mic verb unit.
 4. Stop the session PipeWire stack (including sockets) so the analog
    PCM is closed.
@@ -156,7 +153,8 @@ After a successful install:
 - A non-silent WAV from
   `arecord -D hw:DMIC,0 -r 48000 -c 2 -f S16_LE -d 3`
 - `/etc/wireplumber/wireplumber.conf.d/51-sf514-dmic-soft-mixer.conf`
-  through `54-sf514-headset-gain.conf` present (`Mult = 4.0`)
+  through `54-sf514-headset-gain.conf` present (DMIC `Mult = 8.0`,
+  Headset `Mult = 4.0`)
 - no home copies of those 51-54 filenames (they would stack with `/etc`)
 
 Then, as a user: default sink is analog Speaker; plugging headphones
@@ -272,19 +270,32 @@ start, reboot with the mic already in).
 Analog PCM is 24-bit left-justified in `S32_LE`. Opening it as
 `S16_LE` looks empty. UCM `SectionDevice."Headset"` binds
 `hw:${CardId},0` with `CaptureFormat S32_LE` and `JackControl
-"Front Headphone Jack"`.
+"Front Headphone Jack"`. Proven analog gain (ADC `0x7027` plus
+WirePlumber `Mult = 4.0`) is in [Capture gain](#capture-gain).
 
-Usable GNOME meter on this electret:
+### Capture gain
 
-- ADC unmute payload `0x7027` (about +12 dB above the 0 dB
-  offset `0x17`)
-- WirePlumber 53/54 on `~alsa_input.*avs_hdaudio.*Headset.*`:
-  `audio.format = "S32LE"`, `alsa.resolution_bits = 24`,
-  `api.alsa.soft-mixer = true`, linear `Mult = 4.0`
+These multipliers were set on this chassis with GNOME's meter.
+GNOME Settings and `wpctl` stay at 1.00 on the capture nodes;
+the boost is a WirePlumber builtin linear filter inside the node.
+The GNOME over-amplification setting applies to speaker output.
 
-`wpctl` remaining at 1.00 on this source is expected; the boost
-is inside the node. The node name looks like
-`alsa_input.platform-avs_hdaudio.*.HiFi__Headset__source`.
+| Source | Fragments | Match | Mult | About | Hardware on top |
+| --- | --- | --- | --- | --- | --- |
+| AVS DMIC (internal) | 51 soft-mixer, 52 gain | `~alsa_input.*avs_dmic.*` | `8.0` | +18 dB | UCM `DMIC Volume` 100% (ALSA max of the raw control) |
+| Analog Headset (3-ring CTIA) | 53 S32LE / 24-bit, 54 gain | `~alsa_input.*avs_hdaudio.*Headset.*` | `4.0` | +12 dB | ADC unmute payload `0x7027` (~+12 dB above ofs `0x17`) |
+
+Files live in `scripts-audio-fix/wireplumber/` and install to
+`/etc/wireplumber/wireplumber.conf.d/`. Home copies of the same
+filenames stack with `/etc` and apply the multiplier twice;
+install and uninstall delete those home copies.
+
+`DMIC Volume` has no 200% step. Extra DMIC loudness is the
+WirePlumber `Mult`. First live DMIC boost was `4.0`. After the
+3-ring analog path sounded right, DMIC `8.0` was **just about right**.
+Analog `4.0` plus ADC `0x7027` is the proven 3-ring meter. To try
+another value, edit `Mult` in 52 (DMIC) or 54 (Headset) and re-run
+`sudo ./scripts-audio-fix/install.sh`.
 
 ### Limits (audio v1)
 
@@ -294,7 +305,8 @@ is inside the node. The node name looks like
 - Headset mic is hwdep verbs on pin `0x19`, not sysfs `reconfig`
   (that oopses on this AVS codec).
 - Analog Headset Mic is a CTIA TRRS (3-ring) plug. Details are in
-  [Analog plugin mic](#analog-plugin-mic-35-mm).
+  [Analog plugin mic](#analog-plugin-mic-35-mm). Capture multipliers
+  are in [Capture gain](#capture-gain).
 - Overlay + `ALSA_CONFIG_UCM2` only affects processes with that
   environment. Session audio gets it from the systemd drop-ins.
 - Install still stops the session PipeWire stack so UCM and the
@@ -307,10 +319,8 @@ is inside the node. The node name looks like
   `snd_hda_codec_reset` safe on ASoC-bound codecs.
 - Upstream: HDMI Number 1-based + `CaptureChannels 2` for this NHLT
   on PR 571.
-- DMIC gain: the EnableSequence is 100% of the raw ALSA control.
-  Extra loudness is WirePlumber linear `Mult = 4.0` on the AVS DMIC
-  capture node (`scripts-audio-fix/wireplumber/`). `wpctl` stays at
-  1.00; the boost is inside the node.
+- DMIC and analog Headset gain: see [Capture gain](#capture-gain).
+  `wpctl` stays at 1.00; the boost is inside the node.
 
 ## Fingerprint (EgisTec 1c7a:0570)
 

@@ -37,7 +37,7 @@ installed_headset_udev_rule_path="/etc/udev/rules.d/70-sf514-alc255-headset.rule
 # --- WirePlumber system conf.d fragments installed for AVS DMIC
 #     (51/52) and analog Headset (53/54) gain. Home copies of the
 #     same filenames must be deleted too, or uninstall would leave
-#     the 4x capture filters in place. ---
+#     the DMIC 8x and Headset 4x capture filters in place. ---
 wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
 wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
 wireplumber_headset_soft_mixer_file_name="53-sf514-headset-soft-mixer.conf"
@@ -411,7 +411,8 @@ path_resolve_session_user_name() {
 # Queue deletion of the session user's home copies of the 51-54
 # WirePlumber fragments. Install already removes those copies after
 # writing the /etc files. Uninstall still deletes them so a leftover
-# experimental copy cannot keep Mult=4.0 after this layer is gone.
+# experimental copy cannot keep the capture filters after this
+# layer is gone.
 session_enqueue_home_dmic_fragment_removes() {
 	local session_home_dmic_soft_mixer_path
 	local session_home_dmic_gain_path

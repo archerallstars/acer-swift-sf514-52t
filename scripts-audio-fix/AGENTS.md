@@ -21,7 +21,7 @@ root `AGENTS.md`.
   `scripts-audio-fix/install.sh` and `uninstall.sh` in the same change.
 - Leave matching 51-54 WirePlumber fragments in the session user's
   `~/.config/wireplumber/wireplumber.conf.d/` after install. Those
-  stack with `/etc` and apply `Mult = 4.0` twice.
+  stack with `/etc` and apply each multiplier twice.
 - Touch fingerprint or other `scripts-<area>-fix` trees from an audio
   task.
 
@@ -37,7 +37,7 @@ root `AGENTS.md`.
   EnableSequence at 100% (ALSA max of the raw integer control) and
   have verify raise the same control before raw `arecord`. Extra
   capture gain is WirePlumber `node.filter-graph.rules` with builtin
-  linear `Mult = 4.0` on `~alsa_input.*avs_dmic.*`, plus
+  linear `Mult = 8.0` on `~alsa_input.*avs_dmic.*`, plus
   `api.alsa.soft-mixer = true`. Those fragments live in
   `scripts-audio-fix/wireplumber/` and install under
   `/etc/wireplumber/wireplumber.conf.d/` as 51 and 52. Delete the
@@ -111,11 +111,12 @@ reads the script as data. Python 3 issues the hwdep ioctl.
   `Headset`, and the headset unit `--watch` poll.
   Do not require analog `Capture Switch` (it never appears under AVS
   on this BIOS). Require the 51-54 fragments under
-  `/etc/wireplumber/wireplumber.conf.d/` (`Mult = 4.0`). A leftover
-  home copy of those filenames is a fail. `wpctl` volume 1.00 on the
-  DMIC is expected. Analog headset capture still needs a plugged jack
-  and Headset Microphone selected. A 3-ring CTIA mic can stay
-  plugged; verify does not treat an empty jack as a fail.
+  `/etc/wireplumber/wireplumber.conf.d/` (DMIC `Mult = 8.0`, Headset
+  `Mult = 4.0`). A leftover home copy of those filenames is a fail.
+  `wpctl` volume 1.00 on the DMIC is expected. Analog headset
+  capture still needs a plugged jack and Headset Microphone
+  selected. A 3-ring CTIA mic can stay plugged; verify does not
+  treat an empty jack as a fail.
 
 ## Out of v1 unless the user asks
 
