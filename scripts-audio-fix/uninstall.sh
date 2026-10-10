@@ -3,7 +3,8 @@
 #
 # Stops the headset reconfig unit and the UCM overlay mount, deletes
 # the files this repo installed under /etc and /var (including the
-# WirePlumber DMIC gain fragments), and restarts the session PipeWire
+# WirePlumber DMIC 51/52 gain fragments), deletes matching home
+# copies of those 51/52 filenames, and restarts the session PipeWire
 # stack. Idempotent: a second run is a successful no-op aside from
 # the session audio restart. Must run as root on the host.
 
@@ -30,12 +31,16 @@ installed_pipewire_dropin_path="/etc/systemd/user/pipewire.service.d/sf514-ucm.c
 installed_wireplumber_dropin_path="/etc/systemd/user/wireplumber.service.d/sf514-ucm.conf"
 installed_environment_dropin_path="/etc/environment.d/50-sf514-alsa-ucm.conf"
 
-# --- WirePlumber system conf.d fragments installed for AVS DMIC gain ---
+# --- WirePlumber system conf.d fragments installed for AVS DMIC gain.
+#     Home copies of the same filenames (from the live Mult=4.0 test,
+#     or recreated after install) must be deleted too, or uninstall
+#     would leave the 4x capture filter in place. ---
 wireplumber_dmic_soft_mixer_file_name="51-sf514-dmic-soft-mixer.conf"
 wireplumber_dmic_gain_file_name="52-sf514-dmic-gain.conf"
 installed_wireplumber_conf_directory="/etc/wireplumber/wireplumber.conf.d"
 installed_wireplumber_dmic_soft_mixer_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_soft_mixer_file_name}"
 installed_wireplumber_dmic_gain_path="${installed_wireplumber_conf_directory}/${wireplumber_dmic_gain_file_name}"
+session_wireplumber_conf_relative_directory=".config/wireplumber/wireplumber.conf.d"
 
 # --- systemd unit names ---
 overlay_mount_unit_name="var-lib-alsa-ucm2-merged.mount"
@@ -76,7 +81,8 @@ log_info() {
 # =============================================================================
 
 # Reverse install.sh: stop user audio, disable units, unmount the
-# overlay, delete installed files, reload systemd, start user audio.
+# overlay, delete installed files and WirePlumber 51/52 fragments
+# (system and session-home copies), reload systemd, start user audio.
 # Exits 0 on success, 1 on failure.
 main() {
 	path_reexec_on_host_if_container "$@"
@@ -86,13 +92,15 @@ main() {
 	host_disable_headset_unit
 	host_disable_overlay_mount
 	host_enqueue_uninstall_removes
+	session_enqueue_home_dmic_fragment_removes
 	file_io_queue_drain
 	host_enqueue_empty_directory_cleanup
 	file_io_queue_drain
 	host_reload_systemd_daemon
 	session_reload_user_systemd
 	session_start_user_audio
-	log_info "Uninstall complete. Log out and back in if CLI tools still export ALSA_CONFIG_UCM2."
+	log_info "Uninstall complete. WirePlumber DMIC 51/52 fragments are gone from ${installed_wireplumber_conf_directory} and the session home directory."
+	log_info "Log out and back in if CLI tools still export ALSA_CONFIG_UCM2."
 }
 
 # =============================================================================
@@ -213,8 +221,9 @@ host_disable_overlay_mount() {
 }
 
 # Queue rmdir of drop-in directories after their files are already gone.
-# /etc/wireplumber/wireplumber.conf.d is removed only when it has no
-# remaining fragments from other packages.
+# /etc/wireplumber/wireplumber.conf.d and the session user's matching
+# conf.d directory are removed only when they have no remaining
+# fragments from other packages or hand-written confs.
 host_enqueue_empty_directory_cleanup() {
 	file_io_queue_enqueue \
 		"${installed_pipewire_dropin_directory}" \
@@ -228,9 +237,18 @@ host_enqueue_empty_directory_cleanup() {
 		"${installed_wireplumber_conf_directory}" \
 		"${installed_wireplumber_conf_directory}" \
 		"remove-empty-directory"
+	if [[ -n "${resolved_session_user_home_directory}" ]]; then
+		file_io_queue_enqueue \
+			"${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}" \
+			"${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}" \
+			"remove-empty-directory"
+	else
+		:
+	fi
 }
 
-# Queue deletion of every file and directory install.sh created.
+# Queue deletion of every file and directory install.sh created under
+# /etc and /var, including the WirePlumber 51/52 DMIC fragments.
 host_enqueue_uninstall_removes() {
 	file_io_queue_enqueue \
 		"${installed_headset_unit_path}" \
@@ -325,14 +343,27 @@ path_require_root() {
 	fi
 }
 
-# Set resolved_session_user_name to the logged-in user whose PipeWire
-# stack we restart after removing drop-ins. Prefers SUDO_USER.
+# Set resolved_session_user_name and resolved_session_user_home_directory
+# for the logged-in user whose PipeWire stack we restart and whose
+# home 51/52 WirePlumber copies we delete. Prefers SUDO_USER.
 path_resolve_session_user_name() {
 	if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
 		resolved_session_user_name="${SUDO_USER}"
 		log_info "Session user is ${resolved_session_user_name}"
+		if command -v getent >/dev/null 2>&1; then
+			resolved_session_user_home_directory="$(getent passwd "${resolved_session_user_name}" | cut -d: -f6)"
+		else
+			resolved_session_user_home_directory="$(awk -F: -v session_user_name="${resolved_session_user_name}" '$1 == session_user_name { print $6; exit }' /etc/passwd)"
+		fi
+		if [[ -z "${resolved_session_user_home_directory}" ]]; then
+			log_info "No home directory for ${resolved_session_user_name}; home WirePlumber fragments will not be removed"
+			resolved_session_user_home_directory=""
+		else
+			log_info "Session home directory is ${resolved_session_user_home_directory}"
+		fi
 	else
 		resolved_session_user_name=""
+		resolved_session_user_home_directory=""
 		log_info "No SUDO_USER; user PipeWire will not be restarted automatically"
 	fi
 }
@@ -340,6 +371,32 @@ path_resolve_session_user_name() {
 # =============================================================================
 # SESSION AUDIO HELPERS
 # =============================================================================
+
+# Queue deletion of the session user's home copies of the 51 and 52
+# WirePlumber fragments. Install already removes those copies after
+# writing the /etc files. Uninstall still deletes them so a leftover
+# experimental copy cannot keep Mult=4.0 after this layer is gone.
+session_enqueue_home_dmic_fragment_removes() {
+	local session_home_dmic_soft_mixer_path
+	local session_home_dmic_gain_path
+	if [[ -z "${resolved_session_user_home_directory}" ]]; then
+		log_info "No session home directory; skip removing home WirePlumber DMIC fragments"
+		return 0  # no home copies to delete
+	else
+		session_home_dmic_soft_mixer_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_soft_mixer_file_name}"
+		session_home_dmic_gain_path="${resolved_session_user_home_directory}/${session_wireplumber_conf_relative_directory}/${wireplumber_dmic_gain_file_name}"
+		file_io_queue_enqueue \
+			"${session_home_dmic_soft_mixer_path}" \
+			"${session_home_dmic_soft_mixer_path}" \
+			"remove-path"
+		file_io_queue_enqueue \
+			"${session_home_dmic_gain_path}" \
+			"${session_home_dmic_gain_path}" \
+			"remove-path"
+		log_info "Queued removal of home copies of ${wireplumber_dmic_soft_mixer_file_name} and ${wireplumber_dmic_gain_file_name}"
+		return 0  # home copies queued for deletion
+	fi
+}
 
 # Reload the session owner's systemd user daemon so dropped drop-ins
 # disappear.
@@ -401,7 +458,8 @@ session_user_systemctl() {
 	fi
 }
 
-# Global filled by path_resolve_session_user_name.
+# Globals filled by path_resolve_session_user_name.
 resolved_session_user_name=""
+resolved_session_user_home_directory=""
 
 main "$@"

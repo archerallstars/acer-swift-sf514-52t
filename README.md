@@ -168,9 +168,9 @@ sudo ./scripts-audio-fix/uninstall.sh
 
 That stops and disables the units this fix enabled, unmounts the
 overlay, deletes the files it copied into `/etc` and `/var/lib/alsa`
-(including the WirePlumber 51/52 DMIC fragments), reloads systemd,
-and restarts PipeWire. Other `scripts-<area>-fix` layers are left
-alone.
+(including the WirePlumber 51/52 DMIC fragments), deletes matching
+home copies of those 51/52 filenames, reloads systemd, and restarts
+PipeWire. Other `scripts-<area>-fix` layers are left alone.
 
 ### Limits (audio v1)
 

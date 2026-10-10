@@ -75,8 +75,9 @@ in a subshell and the unit sets `SuccessExitStatus=SIGKILL`.
   and delete the session user's home copies of those filenames.
 - `uninstall.sh` reverses **this** fix only: `systemctl stop` +
   `disable` the audio units, delete those unit files, drop-ins, and
-  WirePlumber 51/52 fragments, unmount the UCM overlay, reload
-  systemd, restart the session PipeWire stack.
+  WirePlumber 51/52 fragments under `/etc` and matching home copies
+  of those filenames, unmount the UCM overlay, reload systemd,
+  restart the session PipeWire stack.
 - `verify.sh` must not treat `wpctl status` as a pass. Discover cards
   from `/proc/asound/cards`. Require HiFi from `spa-acp-tool` when the
   overlay is mounted. Require the 51/52 fragments under
