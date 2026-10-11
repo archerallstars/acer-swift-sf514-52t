@@ -464,7 +464,8 @@ Install will:
    capture tool (fprintd itself runs as root).
 5. Label the overlay `.so` when a MAC is present (SELinux `lib_t`, or
    an AppArmor `mr` rule). Skip those steps on hosts without them.
-6. `systemctl daemon-reload` and restart `fprintd.service`.
+6. `systemctl daemon-reload` before udev, then stop `fprintd.service`,
+   reload until the drop-in is listed, and start it.
 
 Then enroll:
 

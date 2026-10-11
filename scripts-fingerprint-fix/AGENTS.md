@@ -54,7 +54,10 @@ layering: root `AGENTS.md`.
 ## Install / uninstall / verify
 
 - `install.sh` copies `fingerprint/dist/` plus the drop-in and udev
-  rule, then restarts fprintd. `uninstall.sh` reverses that set only.
+  rule. Reload systemd before the udev trigger, because USB add can
+  dbus-start fprintd. Then stop fprintd, daemon-reload until DropInPaths
+  lists the drop-in, and start. `uninstall.sh` reverses that set only,
+  with the same order.
 - `verify.sh` plumbing needs no finger. `--live` waits on the pad.
 - Host, not the container: scripts re-exec via `distrobox-host-exec`.
 

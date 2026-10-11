@@ -33,6 +33,9 @@ apparmor_fprintd_profile_candidates=(
 )
 
 fprintd_unit_name="fprintd.service"
+# Same retry cap as install.sh: inotify on the drop-in directory can
+# leave NeedDaemonReload set after a single daemon-reload.
+systemd_dropin_reload_attempt_limit=3
 
 # =============================================================================
 # LOGGER
@@ -54,8 +57,10 @@ log_info() {
 # ENTRY POINT
 # =============================================================================
 
-# Reverse install.sh: restart fprintd onto the distro libfprint after
-# the overlay files are gone. Exits 0 on success.
+# Reverse install.sh: remove overlay files, reload systemd so the
+# drop-in is gone before udev can dbus-activate fprintd, then stop,
+# reload again, and start fprintd onto distro libfprint. Exits 0 on
+# success.
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
@@ -65,8 +70,8 @@ main() {
 	file_io_queue_drain
 	host_remove_apparmor_fprintd_overlay
 	host_remove_selinux_library_context
-	host_reload_udev_rules
 	host_reload_systemd_daemon
+	host_reload_udev_rules
 	host_restart_fprintd
 	log_info "Uninstall complete. fprintd will load the distro libfprint-2.so.2 again."
 	log_info "Enrolled prints in /var/lib/fprint/ were left in place. Use fprintd-delete to remove them."
@@ -232,18 +237,6 @@ host_remove_apparmor_fprintd_overlay() {
 	fi
 }
 
-# Reload udev after deleting the overlay rule.
-host_reload_udev_rules() {
-	if command -v udevadm >/dev/null 2>&1; then
-		udevadm control --reload-rules || true
-		udevadm trigger --subsystem-match=usb --action=add || true
-		log_info "Reloaded udev rules"
-		return 0  # rules reloaded
-	else
-		return 0  # nothing to reload
-	fi
-}
-
 # Reload systemd so the removed drop-in disappears.
 host_reload_systemd_daemon() {
 	if systemctl daemon-reload; then
@@ -252,6 +245,19 @@ host_reload_systemd_daemon() {
 	else
 		log_error "systemctl daemon-reload failed"
 		exit 1
+	fi
+}
+
+# Reload udev after deleting the overlay rule. USB add may
+# dbus-activate fprintd; call this after the drop-in is unloaded.
+host_reload_udev_rules() {
+	if command -v udevadm >/dev/null 2>&1; then
+		udevadm control --reload-rules || true
+		udevadm trigger --subsystem-match=usb --action=add || true
+		log_info "Reloaded udev rules"
+		return 0  # rules reloaded
+	else
+		return 0  # nothing to reload
 	fi
 }
 
@@ -289,14 +295,41 @@ host_remove_selinux_library_context() {
 	fi
 }
 
-# Restart fprintd so it loads the distro libfprint again.
+# Stop dbus-activated fprintd, reload units until the overlay drop-in
+# is gone, then start the service on distro libfprint. One daemon-reload
+# plus restart can leave the unit stale the same way install.sh can.
 host_restart_fprintd() {
-	if systemctl restart "${fprintd_unit_name}"; then
-		log_info "Restarted ${fprintd_unit_name}"
-		return 0  # fprintd now uses distro libfprint
+	local dropin_paths=""
+	local reload_attempt=1
+	if systemctl stop "${fprintd_unit_name}"; then
+		log_info "Stopped ${fprintd_unit_name}"
 	else
 		log_info "${fprintd_unit_name} was not running"
-		return 0  # nothing to restart
+	fi
+	while [[ "${reload_attempt}" -le "${systemd_dropin_reload_attempt_limit}" ]]; do
+		host_reload_systemd_daemon
+		dropin_paths="$(systemctl show -p DropInPaths --value "${fprintd_unit_name}" 2>/dev/null || true)"
+		if [[ "${dropin_paths}" == *"${installed_fprintd_dropin_path}"* ]]; then
+			log_info "Drop-in still listed on ${fprintd_unit_name} (attempt ${reload_attempt})"
+		else
+			log_info "systemd no longer lists drop-in ${installed_fprintd_dropin_path}"
+			break
+		fi
+		reload_attempt=$((reload_attempt + 1))
+	done
+	if [[ "${dropin_paths}" == *"${installed_fprintd_dropin_path}"* ]]; then
+		log_error "systemd still lists ${installed_fprintd_dropin_path} after ${systemd_dropin_reload_attempt_limit} daemon-reload attempts"
+		systemctl show "${fprintd_unit_name}" -p DropInPaths --no-pager || true
+		exit 1
+	else
+		:
+	fi
+	if systemctl start "${fprintd_unit_name}"; then
+		log_info "Started ${fprintd_unit_name}"
+		return 0  # fprintd now uses distro libfprint
+	else
+		log_info "${fprintd_unit_name} did not start; dbus activation will use distro libfprint"
+		return 0  # unit is current even if idle
 	fi
 }
 

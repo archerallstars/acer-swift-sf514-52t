@@ -47,6 +47,9 @@ apparmor_fprintd_profile_candidates=(
 
 # --- systemd ---
 fprintd_unit_name="fprintd.service"
+# dbus-activated fprintd plus inotify on a new drop-in directory can
+# mark the unit stale after one daemon-reload. Retry a few times.
+systemd_dropin_reload_attempt_limit=3
 
 # =============================================================================
 # LOGGER
@@ -68,8 +71,9 @@ log_info() {
 # ENTRY POINT
 # =============================================================================
 
-# Copy overlay files, apply SELinux context, reload systemd, restart
-# fprintd. Exits 0 on success, 1 on failure.
+# Copy overlay files, apply MAC labels, reload systemd so the drop-in
+# is loaded before udev can dbus-activate fprintd, then stop, reload
+# again, and start fprintd. Exits 0 on success, 1 on failure.
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
@@ -86,8 +90,8 @@ main() {
 	file_io_queue_drain
 	host_apply_selinux_library_context
 	host_apply_apparmor_fprintd_overlay
-	host_reload_udev_rules
 	host_reload_systemd_daemon
+	host_reload_udev_rules
 	host_restart_fprintd
 	log_info "Install complete. Overlay libfprint is at ${installed_library_soname_path}."
 	log_info "Run ${repository_fingerprint_scripts_directory_name}/verify.sh as your regular user."
@@ -356,6 +360,8 @@ host_reload_systemd_daemon() {
 }
 
 # Reload udev so the seat user can claim the pad for the capture tool.
+# USB add may dbus-activate fprintd; call this after the drop-in is
+# loaded.
 host_reload_udev_rules() {
 	if command -v udevadm >/dev/null 2>&1; then
 		udevadm control --reload-rules || true
@@ -368,14 +374,51 @@ host_reload_udev_rules() {
 	fi
 }
 
-# Restart dbus-activated fprintd so it loads LD_LIBRARY_PATH.
+# Stop dbus-activated fprintd, reload units until the overlay drop-in
+# is listed, then start the service. One daemon-reload plus restart
+# leaves the unit stale: udev USB add can activate fprintd on the old
+# unit, and inotify on the new drop-in directory can mark it dirty
+# again after the first reload.
 host_restart_fprintd() {
-	if systemctl restart "${fprintd_unit_name}"; then
-		log_info "Restarted ${fprintd_unit_name}"
+	local dropin_paths=""
+	local fprintd_environment=""
+	local reload_attempt=1
+	if systemctl stop "${fprintd_unit_name}"; then
+		log_info "Stopped ${fprintd_unit_name}"
+	else
+		log_info "${fprintd_unit_name} was not running"
+	fi
+	while [[ "${reload_attempt}" -le "${systemd_dropin_reload_attempt_limit}" ]]; do
+		host_reload_systemd_daemon
+		dropin_paths="$(systemctl show -p DropInPaths --value "${fprintd_unit_name}" 2>/dev/null || true)"
+		if [[ "${dropin_paths}" == *"${installed_fprintd_dropin_path}"* ]]; then
+			log_info "systemd lists drop-in ${installed_fprintd_dropin_path}"
+			break
+		else
+			log_info "Drop-in not listed on ${fprintd_unit_name} yet (attempt ${reload_attempt})"
+		fi
+		reload_attempt=$((reload_attempt + 1))
+	done
+	if [[ "${dropin_paths}" == *"${installed_fprintd_dropin_path}"* ]]; then
+		:
+	else
+		log_error "systemd did not load ${installed_fprintd_dropin_path} after ${systemd_dropin_reload_attempt_limit} daemon-reload attempts"
+		systemctl show "${fprintd_unit_name}" -p DropInPaths --no-pager || true
+		exit 1
+	fi
+	fprintd_environment="$(systemctl show -p Environment --value "${fprintd_unit_name}" 2>/dev/null || true)"
+	if [[ "${fprintd_environment}" == *"LD_LIBRARY_PATH=${installed_library_directory}"* ]]; then
+		log_info "fprintd Environment includes LD_LIBRARY_PATH=${installed_library_directory}"
+	else
+		log_error "fprintd Environment is missing overlay LD_LIBRARY_PATH: ${fprintd_environment}"
+		exit 1
+	fi
+	if systemctl start "${fprintd_unit_name}"; then
+		log_info "Started ${fprintd_unit_name}"
 		return 0  # fprintd now sees the overlay
 	else
-		log_info "${fprintd_unit_name} was not running; it will pick up the drop-in on next activation"
-		return 0  # dbus activation will start it later
+		log_info "${fprintd_unit_name} did not start; dbus activation will use the loaded drop-in"
+		return 0  # unit is current even if idle
 	fi
 }
 
