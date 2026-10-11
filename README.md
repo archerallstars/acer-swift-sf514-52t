@@ -440,8 +440,9 @@ Install will:
    (`LD_LIBRARY_PATH=/var/usrlocal/lib64`).
 4. Install `udev/70-sf514-egis0570.rules` so the seat user can run the
    capture tool (fprintd itself runs as root).
-5. Add a persistent SELinux `lib_t` fcontext on the overlay `.so` and
-   `restorecon`.
+5. `restorecon` the overlay `.so` to `lib_t`. A persistent fcontext
+   uses `/usr/local/lib64` (Silverblue's `/var/usrlocal` = `/usr/local`
+   equivalency rejects a `/var/usrlocal` spec).
 6. `systemctl daemon-reload` and restart `fprintd.service`.
 
 `authselect` `with-fingerprint` stays as it is. PAM still talks to

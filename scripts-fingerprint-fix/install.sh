@@ -25,7 +25,10 @@ installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
 # --- SELinux file context for fprintd_t mmap of the overlay .so ---
-selinux_overlay_fcontext_pattern='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
+# Silverblue equivalency is /var/usrlocal = /usr/local, so semanage
+# rejects a spec under /var/usrlocal. Prefer the /usr/local path.
+selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
+selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_type="lib_t"
 
 # --- systemd ---
@@ -187,20 +190,51 @@ directory_create_install_paths() {
 # HOST HELPERS
 # =============================================================================
 
-# Persist lib_t on the overlay library so fprintd_t can mmap it.
-host_apply_selinux_library_context() {
-	if command -v semanage >/dev/null 2>&1; then
-		if semanage fcontext -l | grep -F "${selinux_overlay_fcontext_pattern}" >/dev/null 2>&1; then
-			log_info "SELinux fcontext for the overlay library already exists"
+# Add a persistent fcontext for the overlay .so. Tries /usr/local first
+# (Silverblue equivalency), then /var/usrlocal. Does not abort install:
+# restorecon/chcon still label this copy if semanage rejects both.
+host_add_selinux_overlay_fcontext() {
+	local fcontext_patterns=(
+		"${selinux_overlay_fcontext_pattern_usr_local}"
+		"${selinux_overlay_fcontext_pattern_var_usrlocal}"
+	)
+	local fcontext_pattern
+	local existing_fcontext_list
+	existing_fcontext_list="$(semanage fcontext -l 2>/dev/null || true)"
+	for fcontext_pattern in "${fcontext_patterns[@]}"; do
+		if [[ "${existing_fcontext_list}" == *"${fcontext_pattern}"* ]]; then
+			log_info "SELinux fcontext ${fcontext_pattern} already exists"
+			return 0  # local module already has a spec
 		else
-			if semanage fcontext -a -t "${selinux_overlay_fcontext_type}" \
-				"${selinux_overlay_fcontext_pattern}"; then
-				log_info "Added SELinux fcontext ${selinux_overlay_fcontext_type} on overlay libfprint"
-			else
-				log_error "semanage fcontext failed"
-				exit 1
-			fi
+			:
 		fi
+	done
+	for fcontext_pattern in "${fcontext_patterns[@]}"; do
+		if semanage fcontext -a -t "${selinux_overlay_fcontext_type}" \
+			"${fcontext_pattern}"; then
+			log_info "Added SELinux fcontext ${selinux_overlay_fcontext_type} as ${fcontext_pattern}"
+			return 0  # persistent spec installed
+		else
+			log_info "semanage rejected ${fcontext_pattern}"
+		fi
+	done
+	log_info "No persistent fcontext added; restorecon/chcon will still label this copy"
+	return 0  # copy can still be labeled in place
+}
+
+# Label the overlay library lib_t so fprintd_t can mmap it.
+# Skip semanage when policy already maps the path (Silverblue does).
+host_apply_selinux_library_context() {
+	local matchpathcon_text=""
+	if command -v matchpathcon >/dev/null 2>&1; then
+		matchpathcon_text="$(matchpathcon "${installed_library_real_path}" 2>/dev/null || true)"
+	else
+		matchpathcon_text=""
+	fi
+	if [[ "${matchpathcon_text}" == *":${selinux_overlay_fcontext_type}:"* ]]; then
+		log_info "SELinux policy already maps the overlay library to ${selinux_overlay_fcontext_type}"
+	elif command -v semanage >/dev/null 2>&1; then
+		host_add_selinux_overlay_fcontext
 	else
 		log_info "semanage not installed; using chcon (does not survive a full relabel)"
 	fi

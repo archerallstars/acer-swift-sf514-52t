@@ -19,7 +19,10 @@ installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0
 installed_fprintd_dropin_directory="/etc/systemd/system/fprintd.service.d"
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
-selinux_overlay_fcontext_pattern='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
+# Same specs install.sh may have added. Silverblue only accepts the
+# /usr/local path; older installers tried /var/usrlocal and failed.
+selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
+selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
 
 fprintd_unit_name="fprintd.service"
 
@@ -205,17 +208,34 @@ host_reload_systemd_daemon() {
 	fi
 }
 
-# Remove only the SELinux fcontext this overlay added.
+# Remove only the SELinux fcontext this overlay added, if either path
+# is present in local policy.
 host_remove_selinux_library_context() {
+	local fcontext_patterns=(
+		"${selinux_overlay_fcontext_pattern_usr_local}"
+		"${selinux_overlay_fcontext_pattern_var_usrlocal}"
+	)
+	local fcontext_pattern
+	local existing_fcontext_list
+	local removed_fcontext_count=0
 	if command -v semanage >/dev/null 2>&1; then
-		if semanage fcontext -l | grep -F "${selinux_overlay_fcontext_pattern}" >/dev/null 2>&1; then
-			if semanage fcontext -d "${selinux_overlay_fcontext_pattern}"; then
-				log_info "Removed SELinux fcontext for the overlay library"
+		existing_fcontext_list="$(semanage fcontext -l 2>/dev/null || true)"
+		for fcontext_pattern in "${fcontext_patterns[@]}"; do
+			if [[ "${existing_fcontext_list}" == *"${fcontext_pattern}"* ]]; then
+				if semanage fcontext -d "${fcontext_pattern}"; then
+					log_info "Removed SELinux fcontext ${fcontext_pattern}"
+					removed_fcontext_count=$((removed_fcontext_count + 1))
+				else
+					log_info "Could not delete SELinux fcontext ${fcontext_pattern}"
+				fi
 			else
-				log_info "Could not delete SELinux fcontext; it may already be gone"
+				:
 			fi
-		else
+		done
+		if [[ "${removed_fcontext_count}" -eq 0 ]]; then
 			log_info "No overlay SELinux fcontext to remove"
+		else
+			:
 		fi
 	else
 		log_info "semanage not installed; skip fcontext removal"

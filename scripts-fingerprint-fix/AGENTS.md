@@ -38,8 +38,11 @@ layering: root `AGENTS.md`.
   engine unless Phase 4 on a live corpus fails.
 - `systemd/sf514-egis0570.conf` must keep `LD_LIBRARY_PATH` on
   `/var/usrlocal/lib64` so it works when `/usr/local` is not a symlink.
-- SELinux type on the overlay `.so` must be `lib_t` (`semanage` +
-  `restorecon`). `fprintd_t` will not mmap an unlabeled copy.
+- SELinux type on the overlay `.so` must be `lib_t` (`restorecon`).
+  Do not add an fcontext under `/var/usrlocal`: Silverblue's
+  equivalency `/var/usrlocal` = `/usr/local` rejects it. Use
+  `/usr/local/lib64/libfprint-2\.so(\..*)?` only when policy does
+  not already map that path. `fprintd_t` will not mmap `tmp_t`.
 - `udev/70-sf514-egis0570.rules` is only for the capture tool (seat
   `uaccess`). fprintd opens the pad as root.
 
