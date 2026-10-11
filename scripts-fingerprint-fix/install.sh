@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Install the Acer Swift SF514-52T EgisTec 0570 fingerprint overlay on
-# Fedora Atomic. Copies the overlay libfprint into /var/usrlocal, the
-# capture tool into /var/usrlocal/bin, and a fprintd drop-in into /etc.
-# /usr is never modified. Must run as root on the host.
+# Install the Acer Swift SF514-52T EgisTec 0570 fingerprint overlay.
+# Copies the overlay libfprint into /var/usrlocal, the capture tool
+# into /var/usrlocal/bin, and a fprintd drop-in into /etc. The same
+# paths are used on a mutable root and on ostree: /usr is never
+# modified. Must run as root on the host.
 
 set -euo pipefail
 
@@ -13,7 +14,7 @@ set -euo pipefail
 # --- Repo layout ---
 repository_fingerprint_scripts_directory_name="scripts-fingerprint-fix"
 
-# --- Overlay destinations on this Silverblue host ---
+# --- Overlay destinations (same on ostree and a mutable root) ---
 installed_library_directory="/var/usrlocal/lib64"
 installed_binary_directory="/var/usrlocal/bin"
 installed_library_real_path="/var/usrlocal/lib64/libfprint-2.so.2.0.0"
@@ -24,12 +25,25 @@ installed_fprintd_dropin_directory="/etc/systemd/system/fprintd.service.d"
 installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0570.conf"
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
-# --- SELinux file context for fprintd_t mmap of the overlay .so ---
-# Silverblue equivalency is /var/usrlocal = /usr/local, so semanage
-# rejects a spec under /var/usrlocal. Prefer the /usr/local path.
+# --- SELinux: fprintd_t mmap of the overlay .so ---
+# Ostree Fedora maps /var/usrlocal onto /usr/local, so semanage rejects
+# a spec under /var/usrlocal there. A mutable SELinux host without that
+# equivalency needs the /var/usrlocal spec (the files live there).
 selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_type="lib_t"
+selinux_fs_enforce_path="/sys/fs/selinux/enforce"
+
+# --- AppArmor: allow fprintd to mmap the overlay when a profile exists ---
+apparmor_securityfs_path="/sys/kernel/security/apparmor"
+apparmor_fprintd_overlay_begin_marker="# BEGIN sf514-egis0570"
+apparmor_fprintd_overlay_end_marker="# END sf514-egis0570"
+apparmor_fprintd_overlay_rule='/var/usrlocal/lib64/libfprint-2.so* mr,'
+apparmor_fprintd_profile_candidates=(
+	"/etc/apparmor.d/usr.libexec.fprintd"
+	"/etc/apparmor.d/usr.lib.fprintd"
+	"/etc/apparmor.d/usr.sbin.fprintd"
+)
 
 # --- systemd ---
 fprintd_unit_name="fprintd.service"
@@ -71,6 +85,7 @@ main() {
 		"chmod-executable"
 	file_io_queue_drain
 	host_apply_selinux_library_context
+	host_apply_apparmor_fprintd_overlay
 	host_reload_udev_rules
 	host_reload_systemd_daemon
 	host_restart_fprintd
@@ -190,42 +205,87 @@ directory_create_install_paths() {
 # HOST HELPERS
 # =============================================================================
 
-# Add a persistent fcontext for the overlay .so. Tries /usr/local first
-# (Silverblue equivalency), then /var/usrlocal. Does not abort install:
-# restorecon/chcon still label this copy if semanage rejects both.
+# Add one persistent fcontext for the overlay .so. Ostree Fedora
+# equivalency requires the /usr/local path; a mutable SELinux host
+# without that equivalency uses /var/usrlocal (where the file lives).
 host_add_selinux_overlay_fcontext() {
-	local fcontext_patterns=(
-		"${selinux_overlay_fcontext_pattern_usr_local}"
-		"${selinux_overlay_fcontext_pattern_var_usrlocal}"
-	)
-	local fcontext_pattern
 	local existing_fcontext_list
+	local fcontext_pattern
 	existing_fcontext_list="$(semanage fcontext -l 2>/dev/null || true)"
-	for fcontext_pattern in "${fcontext_patterns[@]}"; do
-		if [[ "${existing_fcontext_list}" == *"${fcontext_pattern}"* ]]; then
-			log_info "SELinux fcontext ${fcontext_pattern} already exists"
-			return 0  # local module already has a spec
-		else
-			:
-		fi
-	done
-	for fcontext_pattern in "${fcontext_patterns[@]}"; do
+	if echo "${existing_fcontext_list}" | grep -qE \
+		'^/var/usrlocal[[:space:]]+=[[:space:]]+/usr/local'; then
+		fcontext_pattern="${selinux_overlay_fcontext_pattern_usr_local}"
+	else
+		fcontext_pattern="${selinux_overlay_fcontext_pattern_var_usrlocal}"
+	fi
+	if [[ "${existing_fcontext_list}" == *"${fcontext_pattern}"* ]]; then
+		log_info "SELinux fcontext ${fcontext_pattern} already exists"
+		return 0  # local module already has a spec
+	else
 		if semanage fcontext -a -t "${selinux_overlay_fcontext_type}" \
 			"${fcontext_pattern}"; then
 			log_info "Added SELinux fcontext ${selinux_overlay_fcontext_type} as ${fcontext_pattern}"
 			return 0  # persistent spec installed
 		else
-			log_info "semanage rejected ${fcontext_pattern}"
+			log_info "semanage rejected ${fcontext_pattern}; restorecon/chcon will still label this copy"
+			return 0  # copy can still be labeled in place
+		fi
+	fi
+}
+
+# Allow a confined fprintd to mmap the overlay .so. No-op when AppArmor
+# is off or no fprintd profile is installed.
+host_apply_apparmor_fprintd_overlay() {
+	local apparmor_profile_path
+	local apparmor_local_path
+	local apparmor_profile_basename
+	if [[ ! -d "${apparmor_securityfs_path}" ]]; then
+		log_info "AppArmor is not enabled; skip profile snippet"
+		return 0  # Debian/Fedora default is often unconfined fprintd
+	else
+		:
+	fi
+	for apparmor_profile_path in "${apparmor_fprintd_profile_candidates[@]}"; do
+		if [[ -f "${apparmor_profile_path}" ]]; then
+			apparmor_profile_basename="$(basename "${apparmor_profile_path}")"
+			apparmor_local_path="/etc/apparmor.d/local/${apparmor_profile_basename}"
+			mkdir -p "/etc/apparmor.d/local"
+			if [[ -f "${apparmor_local_path}" ]] \
+				&& grep -F "${apparmor_fprintd_overlay_begin_marker}" \
+					"${apparmor_local_path}" >/dev/null 2>&1; then
+				log_info "AppArmor local snippet already present in ${apparmor_local_path}"
+			else
+				{
+					echo "${apparmor_fprintd_overlay_begin_marker}"
+					echo "${apparmor_fprintd_overlay_rule}"
+					echo "${apparmor_fprintd_overlay_end_marker}"
+				} >> "${apparmor_local_path}"
+				log_info "Added AppArmor local snippet ${apparmor_local_path}"
+			fi
+			if command -v apparmor_parser >/dev/null 2>&1; then
+				apparmor_parser -r "${apparmor_profile_path}" || true
+			else
+				:
+			fi
+			return 0  # at most one fprintd profile is active
+		else
+			:
 		fi
 	done
-	log_info "No persistent fcontext added; restorecon/chcon will still label this copy"
-	return 0  # copy can still be labeled in place
+	log_info "No fprintd AppArmor profile on this host; skip"
+	return 0  # fprintd is not confined by AppArmor
 }
 
 # Label the overlay library lib_t so fprintd_t can mmap it.
-# Skip semanage when policy already maps the path (Silverblue does).
+# Skip entirely when SELinux is not in use (Debian, Ubuntu, Arch, …).
 host_apply_selinux_library_context() {
 	local matchpathcon_text=""
+	if [[ ! -e "${selinux_fs_enforce_path}" ]]; then
+		log_info "SELinux is not enabled; skip file context"
+		return 0  # no MAC label to fix
+	else
+		:
+	fi
 	if command -v matchpathcon >/dev/null 2>&1; then
 		matchpathcon_text="$(matchpathcon "${installed_library_real_path}" 2>/dev/null || true)"
 	else
@@ -369,10 +429,10 @@ path_reexec_on_host_if_container() {
 		if command -v distrobox-host-exec >/dev/null 2>&1; then
 			local script_absolute_path
 			script_absolute_path="$(readlink -f "${BASH_SOURCE[0]}")"
-			log_info "Re-running on the Fedora host via distrobox-host-exec"
+			log_info "Re-running on the host via distrobox-host-exec"
 			exec distrobox-host-exec sudo bash "${script_absolute_path}" "$@"
 		else
-			log_error "Run this installer on the Fedora Silverblue host, not inside a container."
+			log_error "Run this installer on the host, not inside a container."
 			exit 1
 		fi
 	else

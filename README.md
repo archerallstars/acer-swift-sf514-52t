@@ -398,9 +398,9 @@ tiny 114×57 frames with NBIS/BOZORTH3. Enroll never becomes usable
 login. See [`fingerprint/diagnosis.md`](fingerprint/diagnosis.md).
 
 This overlay is a press-mode libfprint driver plus a clean-room
-Gabor/NCC matcher, loaded beside the ostree `libfprint` through
-`LD_LIBRARY_PATH`. It does not `rpm-ostree override` anything and it
-does not touch the ALSA/UCM tree.
+Gabor/NCC matcher, loaded beside the distro `libfprint` through
+`LD_LIBRARY_PATH`. It does not replace `/usr` (no `rpm-ostree
+override`, no `dpkg-divert`) and it does not touch the ALSA/UCM tree.
 
 | | |
 | --- | --- |
@@ -418,11 +418,33 @@ systemd/sf514-egis0570.conf   fprintd.service drop-in
 udev/70-sf514-egis0570.rules  seat uaccess for the capture tool
 ```
 
+### Distro support
+
+The installer is the same on a mutable root and on ostree: it only
+writes `/var/usrlocal` and `/etc`. It needs **systemd**, **fprintd**,
+and a **libfprint 2** ABI that matches the overlay you built.
+
+Build `fingerprint/build-overlay.sh` on the same distro (or a
+container of that distro) that will run fprintd. An `.so` built on
+openSUSE may not load on Debian.
+
+| Host | What the installer does |
+| --- | --- |
+| Fedora Atomic / Silverblue | `/var/usrlocal` is `/usr/local`. SELinux `lib_t` via restorecon. |
+| Fedora Workstation (mutable) | Creates `/var/usrlocal`. SELinux fcontext on that path if policy does not already map it. |
+| Debian / Ubuntu / Arch | No SELinux. AppArmor snippet only if a fprintd profile exists. |
+
+PAM is left to the distro (`authselect enable-feature with-fingerprint`
+or `pam-auth-update --enable fprintd`). This overlay does not edit
+`/etc/pam.d`.
+
+Live-tested on Fedora Silverblue 44 on this chassis.
+
 ### Install
 
-Build in distrobox (meson, ninja, gcc, libusb, glib, gusb), then
-install on the Silverblue **host**. Scripts re-exec via
-`distrobox-host-exec sudo` when started inside a container.
+Build (meson, ninja, gcc, libusb, glib, gusb), then install as root
+on the **host**. Scripts re-exec via `distrobox-host-exec sudo` when
+started inside a container.
 
 ```bash
 make -C fingerprint/capture
@@ -433,20 +455,16 @@ sudo ./scripts-fingerprint-fix/install.sh
 
 Install will:
 
-1. Copy `libfprint-2.so.2` to `/var/usrlocal/lib64/` (`/usr/local/lib64`).
+1. Copy `libfprint-2.so.2` to `/var/usrlocal/lib64/`.
 2. Copy the capture tool to `/var/usrlocal/bin/sf514-egis0570-capture`.
 3. Install `systemd/sf514-egis0570.conf` as
    `/etc/systemd/system/fprintd.service.d/sf514-egis0570.conf`
    (`LD_LIBRARY_PATH=/var/usrlocal/lib64`).
 4. Install `udev/70-sf514-egis0570.rules` so the seat user can run the
    capture tool (fprintd itself runs as root).
-5. `restorecon` the overlay `.so` to `lib_t`. A persistent fcontext
-   uses `/usr/local/lib64` (Silverblue's `/var/usrlocal` = `/usr/local`
-   equivalency rejects a `/var/usrlocal` spec).
+5. Label the overlay `.so` when a MAC is present (SELinux `lib_t`, or
+   an AppArmor `mr` rule). Skip those steps on hosts without them.
 6. `systemctl daemon-reload` and restart `fprintd.service`.
-
-`authselect` `with-fingerprint` stays as it is. PAM still talks to
-fprintd over D-Bus.
 
 Then enroll:
 
@@ -484,18 +502,19 @@ sudo ./scripts-fingerprint-fix/uninstall.sh
 ```
 
 That removes the drop-in, the overlay `.so` and soname links, the
-capture binary, and the SELinux fcontext this repo added, then restarts
-fprintd onto ostree `/usr/lib64/libfprint-2.so.2`. It does **not**
-delete `/var/lib/fprint/`. Use `fprintd-delete` if you want those
-prints gone.
+capture binary, and any SELinux fcontext or AppArmor snippet this repo
+added, then restarts fprintd onto the distro `libfprint-2.so.2`. It
+does **not** delete `/var/lib/fprint/`. Use `fprintd-delete` if you
+want those prints gone.
 
-### Persistence across Silverblue rebases
+### Persistence across upgrades
 
 | Event | What happens |
 | --- | --- |
 | `rpm-ostree upgrade` | Ostree `/usr/lib64/libfprint-2.so.2` may change. Overlay `.so` and `/etc` drop-in stay. fprintd still loads the overlay. |
+| `dnf` / `apt` / `pacman` upgrade | Distro `libfprint` in `/usr` may change. Overlay in `/var` stays. Rebuild if the ABI jumps. |
 | Layered-package churn | Unrelated. This overlay never adds `libfprint` to `LayeredPackages`. |
-| libfprint ABI jump on a Fedora rebase | Overlay `.so` may be too old. Re-run `fingerprint/build-overlay.sh`, then `sudo ./scripts-fingerprint-fix/install.sh`. |
+| libfprint ABI jump | Overlay `.so` may be too old. Re-run `fingerprint/build-overlay.sh` on that distro, then `sudo ./scripts-fingerprint-fix/install.sh`. |
 
 ### Capture dumps (no overlay required)
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Remove the Acer Swift SF514-52T EgisTec 0570 fingerprint overlay.
 #
-# Restarts fprintd onto the ostree libfprint, deletes the overlay .so,
-# capture binary, drop-in, and the SELinux fcontext this repo added.
-# Does not delete /var/lib/fprint/ enrolled prints. Idempotent.
+# Restarts fprintd onto the distro libfprint, deletes the overlay .so,
+# capture binary, drop-in, SELinux fcontext, and AppArmor snippet this
+# repo added. Does not delete /var/lib/fprint/ enrolled prints.
+# Idempotent.
 
 set -euo pipefail
 
@@ -19,10 +20,17 @@ installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0
 installed_fprintd_dropin_directory="/etc/systemd/system/fprintd.service.d"
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
-# Same specs install.sh may have added. Silverblue only accepts the
-# /usr/local path; older installers tried /var/usrlocal and failed.
+# Same specs install.sh may have added (equivalency vs mutable path).
 selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
+
+apparmor_fprintd_overlay_begin_marker="# BEGIN sf514-egis0570"
+apparmor_fprintd_overlay_end_marker="# END sf514-egis0570"
+apparmor_fprintd_profile_candidates=(
+	"/etc/apparmor.d/usr.libexec.fprintd"
+	"/etc/apparmor.d/usr.lib.fprintd"
+	"/etc/apparmor.d/usr.sbin.fprintd"
+)
 
 fprintd_unit_name="fprintd.service"
 
@@ -46,8 +54,8 @@ log_info() {
 # ENTRY POINT
 # =============================================================================
 
-# Reverse install.sh: restart fprintd onto ostree libfprint after the
-# overlay files are gone. Exits 0 on success.
+# Reverse install.sh: restart fprintd onto the distro libfprint after
+# the overlay files are gone. Exits 0 on success.
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
@@ -55,11 +63,12 @@ main() {
 	file_io_queue_drain
 	host_enqueue_empty_directory_cleanup
 	file_io_queue_drain
+	host_remove_apparmor_fprintd_overlay
 	host_remove_selinux_library_context
 	host_reload_udev_rules
 	host_reload_systemd_daemon
 	host_restart_fprintd
-	log_info "Uninstall complete. fprintd will load ostree /usr/lib64/libfprint-2.so.2 again."
+	log_info "Uninstall complete. fprintd will load the distro libfprint-2.so.2 again."
 	log_info "Enrolled prints in /var/lib/fprint/ were left in place. Use fprintd-delete to remove them."
 }
 
@@ -185,6 +194,44 @@ host_enqueue_uninstall_removes() {
 		"remove-path"
 }
 
+# Remove the AppArmor local snippet this overlay appended, if any.
+host_remove_apparmor_fprintd_overlay() {
+	local apparmor_profile_path
+	local apparmor_local_path
+	local apparmor_profile_basename
+	local snippet_removed=0
+	for apparmor_profile_path in "${apparmor_fprintd_profile_candidates[@]}"; do
+		apparmor_profile_basename="$(basename "${apparmor_profile_path}")"
+		apparmor_local_path="/etc/apparmor.d/local/${apparmor_profile_basename}"
+		if [[ -f "${apparmor_local_path}" ]] \
+			&& grep -F "${apparmor_fprintd_overlay_begin_marker}" \
+				"${apparmor_local_path}" >/dev/null 2>&1; then
+			if command -v sed >/dev/null 2>&1; then
+				sed -i \
+					"/${apparmor_fprintd_overlay_begin_marker}/,/${apparmor_fprintd_overlay_end_marker}/d" \
+					"${apparmor_local_path}"
+				log_info "Removed AppArmor snippet from ${apparmor_local_path}"
+				snippet_removed=1
+				if command -v apparmor_parser >/dev/null 2>&1 \
+					&& [[ -f "${apparmor_profile_path}" ]]; then
+					apparmor_parser -r "${apparmor_profile_path}" || true
+				else
+					:
+				fi
+			else
+				log_info "sed not found; leave ${apparmor_local_path} in place"
+			fi
+		else
+			:
+		fi
+	done
+	if [[ "${snippet_removed}" -eq 0 ]]; then
+		log_info "No overlay AppArmor snippet to remove"
+	else
+		:
+	fi
+}
+
 # Reload udev after deleting the overlay rule.
 host_reload_udev_rules() {
 	if command -v udevadm >/dev/null 2>&1; then
@@ -242,11 +289,11 @@ host_remove_selinux_library_context() {
 	fi
 }
 
-# Restart fprintd so it loads ostree libfprint again.
+# Restart fprintd so it loads the distro libfprint again.
 host_restart_fprintd() {
 	if systemctl restart "${fprintd_unit_name}"; then
 		log_info "Restarted ${fprintd_unit_name}"
-		return 0  # fprintd now uses ostree libfprint
+		return 0  # fprintd now uses distro libfprint
 	else
 		log_info "${fprintd_unit_name} was not running"
 		return 0  # nothing to restart
@@ -264,10 +311,10 @@ path_reexec_on_host_if_container() {
 		if command -v distrobox-host-exec >/dev/null 2>&1; then
 			local script_absolute_path
 			script_absolute_path="$(readlink -f "${BASH_SOURCE[0]}")"
-			log_info "Re-running on the Fedora host via distrobox-host-exec"
+			log_info "Re-running on the host via distrobox-host-exec"
 			exec distrobox-host-exec sudo bash "${script_absolute_path}" "$@"
 		else
-			log_error "Run this uninstaller on the Fedora Silverblue host, not inside a container."
+			log_error "Run this uninstaller on the host, not inside a container."
 			exit 1
 		fi
 	else

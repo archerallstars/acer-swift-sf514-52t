@@ -232,6 +232,12 @@ check_overlay_library_present() {
 check_selinux_library_type() {
 	local library_path="${overlay_library_real_path_on_host}"
 	local selinux_type
+	if [[ ! -e /sys/fs/selinux/enforce ]]; then
+		report_skip "selinux" "SELinux is not enabled on this host"
+		return 0  # Debian/Ubuntu/Arch typically have no SELinux
+	else
+		:
+	fi
 	if [[ ! -e "${library_path}" ]]; then
 		if [[ -e "/run/host${library_path}" ]]; then
 			library_path="/run/host${library_path}"
@@ -357,10 +363,10 @@ path_reexec_on_host_if_container() {
 		if command -v distrobox-host-exec >/dev/null 2>&1; then
 			local script_absolute_path
 			script_absolute_path="$(readlink -f "${BASH_SOURCE[0]}")"
-			log_info "Re-running on the Fedora host via distrobox-host-exec"
+			log_info "Re-running on the host via distrobox-host-exec"
 			exec distrobox-host-exec bash "${script_absolute_path}" "$@"
 		else
-			log_error "Run verify.sh on the Fedora Silverblue host, not inside a container."
+			log_error "Run verify.sh on the host, not inside a container."
 			exit 1
 		fi
 	else

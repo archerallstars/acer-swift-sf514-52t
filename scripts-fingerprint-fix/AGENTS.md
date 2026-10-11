@@ -38,11 +38,16 @@ layering: root `AGENTS.md`.
   engine unless Phase 4 on a live corpus fails.
 - `systemd/sf514-egis0570.conf` must keep `LD_LIBRARY_PATH` on
   `/var/usrlocal/lib64` so it works when `/usr/local` is not a symlink.
-- SELinux type on the overlay `.so` must be `lib_t` (`restorecon`).
-  Do not add an fcontext under `/var/usrlocal`: Silverblue's
-  equivalency `/var/usrlocal` = `/usr/local` rejects it. Use
-  `/usr/local/lib64/libfprint-2\.so(\..*)?` only when policy does
-  not already map that path. `fprintd_t` will not mmap `tmp_t`.
+- Overlay files always go under `/var/usrlocal` and `/etc`, never
+  `/usr`. That is the same on ostree and on a mutable root.
+- SELinux type on the overlay `.so` must be `lib_t` (`restorecon`)
+  when SELinux is on. If `/var/usrlocal` = `/usr/local` equivalency
+  exists, the fcontext spec is `/usr/local/lib64/libfprint-2\.so(\..*)?`.
+  Without that equivalency, the spec is `/var/usrlocal/lib64/...`.
+  Skip SELinux on hosts where `/sys/fs/selinux/enforce` is missing.
+  `fprintd_t` will not mmap `tmp_t`.
+- AppArmor: if a fprintd profile exists, append a local `mr` rule for
+  `/var/usrlocal/lib64/libfprint-2.so*`. No-op when AppArmor is off.
 - `udev/70-sf514-egis0570.rules` is only for the capture tool (seat
   `uaccess`). fprintd opens the pad as root.
 
