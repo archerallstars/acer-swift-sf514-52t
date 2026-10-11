@@ -212,7 +212,7 @@ check_live_enroll_and_verify() {
 	else
 		list_text=""
 	fi
-	log_info "Hold a finger on the pad. Keep it still for about a second per stage. Lift between stages."
+	log_info "Hold a finger on the pad about one second per stage. Lift and move a bit between stages."
 	if [[ "${list_text}" == *"fingerprints:"* && "${list_text}" != *"- "* ]]; then
 		if "${fprintd_enroll_path}"; then
 			report_pass "live-enroll" "fprintd-enroll completed"

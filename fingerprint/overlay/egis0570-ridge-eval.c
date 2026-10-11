@@ -1,6 +1,7 @@
 /*
- * Score two EgisTec 0570 PGM frames with the clean-room Gabor/NCC
- * matcher, or run a synthetic self-test that does not need the pad.
+ * Score two EgisTec 0570 PGM frames with the clean-room
+ * contrast-normalize plus NCC matcher, or run a synthetic self-test
+ * that does not need the pad.
  *
  * Usage:
  *   sf514-egis0570-ridge-eval --self-test
@@ -160,6 +161,7 @@ static void synthetic_translate_frame (
   uint8_t *frame_bytes,
   int shift_x_pixels
 );
+static int run_self_test_extra_cases (void);
 
 /* =============================================================================
  * ENTRY POINT
@@ -547,7 +549,7 @@ path_print_usage (const char *program_name)
   printf (
     "Usage: %s --self-test\n"
     "       %s probe.pgm gallery.pgm\n"
-    "Score 114x57 PGM frames with the overlay Gabor/NCC matcher.\n",
+    "Score 114x57 PGM frames with the overlay ridge NCC matcher.\n",
     program_name,
     program_name);
 }
@@ -763,6 +765,64 @@ synthetic_translate_frame (
             }
         }
       free (scratch_bytes);
+    }
+}
+
+/*
+ * Score two empty frames. A flat pad must stay below the login
+ * threshold. Returns the number of failed checks.
+ */
+static int
+run_self_test_extra_cases (void)
+{
+  int pixel_count =
+    configured_frame_width_pixels * configured_frame_height_pixels;
+  uint8_t *probe_bytes = malloc ((size_t) pixel_count);
+  uint8_t *gallery_bytes = malloc ((size_t) pixel_count);
+  double score;
+  int failed_count = 0;
+  char result_message[256];
+
+  if (probe_bytes == NULL || gallery_bytes == NULL)
+    {
+      log_error ("Out of memory in extra self-test cases");
+      free (probe_bytes);
+      free (gallery_bytes);
+      return 1; /* malloc failed */
+    }
+  else
+    {
+      memset (probe_bytes, 0, (size_t) pixel_count);
+      memset (gallery_bytes, 0, (size_t) pixel_count);
+      score = egis0570_ridge_match_score (
+        probe_bytes,
+        gallery_bytes,
+        configured_frame_width_pixels,
+        configured_frame_height_pixels);
+      if (score >= configured_match_threshold)
+        {
+          snprintf (
+            result_message,
+            sizeof (result_message),
+            "FAIL empty-vs-empty score=%.4f (want < %.2f)",
+            score,
+            configured_match_threshold);
+          log_error (result_message);
+          failed_count += 1;
+        }
+      else
+        {
+          snprintf (
+            result_message,
+            sizeof (result_message),
+            "PASS empty-vs-empty score=%.4f",
+            score);
+          log_info (result_message);
+        }
+
+      free (probe_bytes);
+      free (gallery_bytes);
+      return failed_count; /* extra cases finished */
     }
 }
 
@@ -1015,6 +1075,8 @@ run_self_test (void)
           /* case passed */
         }
     }
+
+  failed_count += run_self_test_extra_cases ();
 
   if (failed_count != 0)
     {

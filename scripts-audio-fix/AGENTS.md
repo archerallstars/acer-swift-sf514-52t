@@ -6,8 +6,8 @@ that this fix still owns. Changing these without a live check
 on this chassis will break UCM matching, HDMI IEC958, or DMIC
 gain.
 
-User-facing steps: `README.md` (Audio section). Repo-wide layering:
-root `AGENTS.md`.
+User-facing steps: `scripts-audio-fix/README.md`. Repo-wide layering:
+root `AGENTS.md`. Chassis index: root `README.md`.
 
 ## Do not
 

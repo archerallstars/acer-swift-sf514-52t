@@ -1,9 +1,13 @@
 /*
  * Capture raw frames from the EgisTec 1c7a:0570 pad on this laptop.
  *
- * Sends the published EGIS/SIGE init and repeat sequences over libusb,
- * dumps each 114 by 57 subframe as PGM, and records mean / stddev so we
- * can tell empty, washed-out, and finger-held captures apart.
+ * Sends an EGIS/SIGE init and repeat sequence over libusb, dumps each
+ * 114 by 57 subframe as PGM, and records mean / stddev so we can tell
+ * empty, washed-out, and finger-held captures apart.
+ *
+ * --init stock uses in-tree libfprint packets. --init windows (default)
+ * uses the tmullender/egis-eh570 Windows-derived list. --wait pauses until
+ * Enter so a finger can already be on the pad.
  *
  * If the USB interface is busy, stop fprintd on the host first:
  *   sudo systemctl stop fprintd.service
@@ -55,8 +59,12 @@ static const int configured_saturated_pixel_floor = 250;
 static const char *configured_default_output_directory = "fingerprint/captures";
 static const char *configured_default_capture_label = "empty";
 static const int configured_default_burst_count = 1;
+/* 0 = capture as soon as the pad is claimed. */
+static const int configured_default_wait_for_operator = 0;
 static const int configured_file_io_queue_capacity = 256;
 static const int configured_log_queue_capacity = 256;
+/* Pause after the log queue is empty so the Enter prompt is not buried. */
+static const int configured_log_drain_settle_microseconds = 20000;
 
 /* =============================================================================
  * LOGGER
@@ -88,7 +96,22 @@ static pthread_t log_queue_worker_thread;
  * LOCAL DATA — EGIS/SIGE command sequences
  * ============================================================================= */
 
-static const unsigned char protocol_initialization_packets[][SF514_EGIS0570_COMMAND_PACKET_SIZE_BYTES] =
+/*
+ * Which 7-byte init list burst 0 sends. Stock is in-tree libfprint
+ * egis0570. Windows is tmullender/egis-eh570 demo.c (same USB PID,
+ * derived from the Windows driver). Repeat packets are shared.
+ */
+enum ProtocolInitializationKind
+{
+  PROTOCOL_INITIALIZATION_KIND_STOCK = 0,
+  PROTOCOL_INITIALIZATION_KIND_WINDOWS = 1,
+};
+
+/* Default is windows: stock empty vs finger dumps on this pad were identical. */
+static const enum ProtocolInitializationKind configured_default_initialization_kind =
+  PROTOCOL_INITIALIZATION_KIND_WINDOWS;
+
+static const unsigned char protocol_stock_initialization_packets[][SF514_EGIS0570_COMMAND_PACKET_SIZE_BYTES] =
 {
   { 0x45, 0x47, 0x49, 0x53, 0x01, 0x20, 0x3f },
   { 0x45, 0x47, 0x49, 0x53, 0x01, 0x58, 0x3f },
@@ -115,6 +138,40 @@ static const unsigned char protocol_initialization_packets[][SF514_EGIS0570_COMM
   { 0x45, 0x47, 0x49, 0x53, 0x06, 0x00, 0xfe },
 };
 
+static const unsigned char protocol_windows_initialization_packets[][SF514_EGIS0570_COMMAND_PACKET_SIZE_BYTES] =
+{
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x0d, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x0e, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x02, 0x1f },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x05, 0x08 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x03, 0xff },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x10, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x11, 0x38 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x12, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x13, 0x71 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x20, 0x41 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x58, 0x41 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x21, 0x09 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x57, 0x09 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x22, 0x02 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x56, 0x02 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x23, 0x01 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x55, 0x01 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x24, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x54, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x25, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x53, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x15, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x16, 0x41 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x09, 0x0a },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x14, 0x00 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x02, 0x0f },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x03, 0x80 },
+  { 0x45, 0x47, 0x49, 0x53, 0x00, 0x02, 0x80 },
+  { 0x45, 0x47, 0x49, 0x53, 0x01, 0x02, 0x2f },
+  { 0x45, 0x47, 0x49, 0x53, 0x06, 0x00, 0xfe },
+};
+
 static const unsigned char protocol_repeat_packets[][SF514_EGIS0570_COMMAND_PACKET_SIZE_BYTES] =
 {
   { 0x45, 0x47, 0x49, 0x53, 0x01, 0x02, 0x0f },
@@ -123,8 +180,12 @@ static const unsigned char protocol_repeat_packets[][SF514_EGIS0570_COMMAND_PACK
   { 0x45, 0x47, 0x49, 0x53, 0x06, 0x00, 0xfe },
 };
 
-static const int protocol_initialization_packet_count =
-  (int) (sizeof (protocol_initialization_packets) / sizeof (protocol_initialization_packets[0]));
+static const int protocol_stock_initialization_packet_count =
+  (int) (sizeof (protocol_stock_initialization_packets)
+         / sizeof (protocol_stock_initialization_packets[0]));
+static const int protocol_windows_initialization_packet_count =
+  (int) (sizeof (protocol_windows_initialization_packets)
+         / sizeof (protocol_windows_initialization_packets[0]));
 static const int protocol_repeat_packet_count =
   (int) (sizeof (protocol_repeat_packets) / sizeof (protocol_repeat_packets[0]));
 
@@ -161,6 +222,9 @@ static pthread_t file_io_queue_worker_thread;
 static char selected_output_directory[4096];
 static char selected_capture_label[64];
 static int selected_burst_count = 1;
+static int selected_wait_for_operator = 0;
+static enum ProtocolInitializationKind selected_initialization_kind =
+  PROTOCOL_INITIALIZATION_KIND_WINDOWS;
 
 struct FrameStatistics
 {
@@ -181,6 +245,9 @@ struct FrameStatisticsWorkerArgument
 };
 
 /* Prototypes: helpers live below main (entry point exception). */
+static const char *capture_initialization_kind_name (
+  enum ProtocolInitializationKind initialization_kind
+);
 static int capture_run_all_bursts (libusb_device_handle *device_handle);
 static int capture_run_one_burst (
   libusb_device_handle *device_handle,
@@ -212,6 +279,7 @@ static char *frame_statistics_to_text (
 );
 static void log_error (const char *log_message);
 static void log_info (const char *log_message);
+static void log_queue_drain (void);
 static void log_queue_enqueue (
   enum LogSeverity log_severity,
   const char *log_message
@@ -224,6 +292,7 @@ static int path_parse_command_line (
   char **argument_values
 );
 static void path_print_usage (const char *program_name);
+static void path_wait_for_operator_ready (void);
 static int usb_claim_sensor (
   libusb_context **usb_context,
   libusb_device_handle **device_handle
@@ -326,6 +395,14 @@ main (
         {
           log_info ("USB descriptors recorded");
         }
+      if (selected_wait_for_operator != 0)
+        {
+          path_wait_for_operator_ready ();
+        }
+      else
+        {
+          /* capture starts as soon as the pad is claimed */
+        }
       capture_status = capture_run_all_bursts (device_handle);
       usb_close_sensor (usb_context, device_handle);
       file_io_queue_drain ();
@@ -347,6 +424,24 @@ main (
  * ============================================================================= */
 
 /*
+ * Return the CLI name of initialization_kind ("stock" or "windows").
+ */
+static const char *
+capture_initialization_kind_name (
+  enum ProtocolInitializationKind initialization_kind
+)
+{
+  if (initialization_kind == PROTOCOL_INITIALIZATION_KIND_STOCK)
+    {
+      return "stock"; /* in-tree libfprint egis0570 init */
+    }
+  else
+    {
+      return "windows"; /* tmullender/egis-eh570 Windows-derived init */
+    }
+}
+
+/*
  * Run the init sequence for burst 0, then repeat sequences for later
  * bursts. Inputs: claimed device_handle. Returns 0 when every burst
  * wrote frames.
@@ -357,6 +452,26 @@ capture_run_all_bursts (libusb_device_handle *device_handle)
   int burst_index;
   int failed_burst_count = 0;
   char progress_message[256];
+  int initialization_packet_count;
+  const char *initialization_kind_name;
+
+  initialization_kind_name =
+    capture_initialization_kind_name (selected_initialization_kind);
+  if (selected_initialization_kind == PROTOCOL_INITIALIZATION_KIND_STOCK)
+    {
+      initialization_packet_count = protocol_stock_initialization_packet_count;
+    }
+  else
+    {
+      initialization_packet_count = protocol_windows_initialization_packet_count;
+    }
+  snprintf (
+    progress_message,
+    sizeof (progress_message),
+    "Using %s init (%d packets, last is capture 06 00 fe)",
+    initialization_kind_name,
+    initialization_packet_count);
+  log_info (progress_message);
 
   for (burst_index = 0; burst_index < selected_burst_count; burst_index++)
     {
@@ -438,11 +553,22 @@ capture_run_one_burst (
     {
       if (use_initialization_sequence != 0)
         {
-          sequence_status = usb_send_packet_sequence (
-            device_handle,
-            protocol_initialization_packets,
-            protocol_initialization_packet_count,
-            capture_payload_bytes);
+          if (selected_initialization_kind == PROTOCOL_INITIALIZATION_KIND_STOCK)
+            {
+              sequence_status = usb_send_packet_sequence (
+                device_handle,
+                protocol_stock_initialization_packets,
+                protocol_stock_initialization_packet_count,
+                capture_payload_bytes);
+            }
+          else
+            {
+              sequence_status = usb_send_packet_sequence (
+                device_handle,
+                protocol_windows_initialization_packets,
+                protocol_windows_initialization_packet_count,
+                capture_payload_bytes);
+            }
         }
       else
         {
@@ -982,9 +1108,10 @@ frame_statistics_to_text (
       int header_length = snprintf (
         statistics_text,
         statistics_text_capacity,
-        "label=%s burst=%d width=%d height=%d frames=%d\n",
+        "label=%s burst=%d init=%s width=%d height=%d frames=%d\n",
         selected_capture_label,
         burst_index,
+        capture_initialization_kind_name (selected_initialization_kind),
         configured_frame_width_pixels,
         configured_frame_height_pixels,
         configured_frame_count_per_capture);
@@ -1048,6 +1175,22 @@ static void
 log_info (const char *log_message)
 {
   log_queue_enqueue (LOG_SEVERITY_INFO, log_message);
+}
+
+/*
+ * Block until every queued log line has been taken by the worker.
+ * The worker may still be printing the last line, so callers that
+ * write to stdout afterwards should wait configured_log_drain_settle_microseconds.
+ */
+static void
+log_queue_drain (void)
+{
+  pthread_mutex_lock (&log_queue_mutex);
+  while (log_queue_count > 0)
+    {
+      pthread_cond_wait (&log_queue_not_full, &log_queue_mutex);
+    }
+  pthread_mutex_unlock (&log_queue_mutex);
 }
 
 /*
@@ -1144,8 +1287,9 @@ log_queue_worker (void *unused_argument)
  * ============================================================================= */
 
 /*
- * Fill selected_output_directory, selected_capture_label, and
- * selected_burst_count from argv. Returns 0 on success.
+ * Fill selected_output_directory, selected_capture_label,
+ * selected_burst_count, selected_wait_for_operator, and
+ * selected_initialization_kind from argv. Returns 0 on success.
  */
 static int
 path_parse_command_line (
@@ -1166,6 +1310,8 @@ path_parse_command_line (
     "%s",
     configured_default_capture_label);
   selected_burst_count = configured_default_burst_count;
+  selected_wait_for_operator = configured_default_wait_for_operator;
+  selected_initialization_kind = configured_default_initialization_kind;
 
   for (argument_index = 1; argument_index < argument_count; argument_index++)
     {
@@ -1231,6 +1377,35 @@ path_parse_command_line (
                 }
             }
         }
+      else if (strcmp (argument_values[argument_index], "--wait") == 0)
+        {
+          selected_wait_for_operator = 1;
+        }
+      else if (strcmp (argument_values[argument_index], "--init") == 0)
+        {
+          if (argument_index + 1 >= argument_count)
+            {
+              log_error ("--init needs stock or windows");
+              return 1; /* missing value */
+            }
+          else
+            {
+              argument_index += 1;
+              if (strcmp (argument_values[argument_index], "stock") == 0)
+                {
+                  selected_initialization_kind = PROTOCOL_INITIALIZATION_KIND_STOCK;
+                }
+              else if (strcmp (argument_values[argument_index], "windows") == 0)
+                {
+                  selected_initialization_kind = PROTOCOL_INITIALIZATION_KIND_WINDOWS;
+                }
+              else
+                {
+                  log_error ("--init must be stock or windows");
+                  return 1; /* unknown init name */
+                }
+            }
+        }
       else
         {
           log_error ("Unknown argument; try --help");
@@ -1248,17 +1423,46 @@ static void
 path_print_usage (const char *program_name)
 {
   printf (
-    "Usage: %s [--output-dir DIR] [--label NAME] [--bursts N]\n"
+    "Usage: %s [--output-dir DIR] [--label NAME] [--bursts N] [--wait] [--init KIND]\n"
     "Capture 114x57 frames from USB 1c7a:0570.\n"
     "  --output-dir  directory for PGM and stats (default: %s)\n"
     "  --label       name prefix such as empty or finger (default: %s)\n"
     "  --bursts      number of 5-frame captures (default: %d)\n"
+    "  --wait        pause until Enter so the finger can already be on the pad\n"
+    "  --init        stock (libfprint) or windows (tmullender/egis-eh570; default: windows)\n"
     "Stop fprintd first if libusb reports BUSY:\n"
     "  sudo systemctl stop fprintd.service\n",
     program_name,
     configured_default_output_directory,
     configured_default_capture_label,
     configured_default_burst_count);
+}
+
+/*
+ * Drain the log queue, then wait for Enter so the operator can
+ * put a finger on the pad (or leave it empty) before the first burst.
+ */
+static void
+path_wait_for_operator_ready (void)
+{
+  char unused_line[256];
+
+  log_info ("Waiting: put the pad in the capture state, then press Enter.");
+  log_info (
+    "Empty capture: keep the pad clear. Finger capture: hold the finger "
+    "on the pad below the arrow keys before Enter.");
+  log_queue_drain ();
+  usleep ((useconds_t) configured_log_drain_settle_microseconds);
+  fprintf (stdout, "sf514-egis0570-capture: Press Enter to capture...\n");
+  fflush (stdout);
+  if (fgets (unused_line, (int) sizeof (unused_line), stdin) == NULL)
+    {
+      log_info ("stdin closed; capturing now");
+    }
+  else
+    {
+      log_info ("Enter received; capturing now");
+    }
 }
 
 /* =============================================================================

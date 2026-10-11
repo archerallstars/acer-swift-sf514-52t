@@ -20,6 +20,14 @@ installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0
 installed_fprintd_dropin_directory="/etc/systemd/system/fprintd.service.d"
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
+# Leftover PATH wrapper from a reverted enroll-hint experiment.
+legacy_enroll_hints_script_path="/var/usrlocal/bin/sf514-egis0570-enroll-hints"
+legacy_enroll_wrapper_path="/var/usrlocal/bin/sf514-fprintd-enroll"
+legacy_fprintd_enroll_wrapper_path="/var/usrlocal/bin/fprintd-enroll"
+legacy_enroll_hints_user_unit_path="/etc/systemd/user/sf514-egis0570-enroll-hints.service"
+legacy_enroll_hints_user_unit_wants_path="/etc/systemd/user/graphical-session.target.wants/sf514-egis0570-enroll-hints.service"
+legacy_enroll_hints_user_unit_name="sf514-egis0570-enroll-hints.service"
+
 # Same specs install.sh may have added (equivalency vs mutable path).
 selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
@@ -64,6 +72,7 @@ log_info() {
 main() {
 	path_reexec_on_host_if_container "$@"
 	path_require_root
+	host_remove_legacy_enroll_hints
 	host_enqueue_uninstall_removes
 	file_io_queue_drain
 	host_enqueue_empty_directory_cleanup
@@ -190,12 +199,32 @@ host_enqueue_uninstall_removes() {
 		"${installed_capture_binary_path}" \
 		"remove-path"
 	file_io_queue_enqueue \
+		"${legacy_enroll_hints_script_path}" \
+		"${legacy_enroll_hints_script_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${legacy_enroll_wrapper_path}" \
+		"${legacy_enroll_wrapper_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${legacy_fprintd_enroll_wrapper_path}" \
+		"${legacy_fprintd_enroll_wrapper_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
 		"${installed_fprintd_dropin_path}" \
 		"${installed_fprintd_dropin_path}" \
 		"remove-path"
 	file_io_queue_enqueue \
 		"${installed_udev_rules_path}" \
 		"${installed_udev_rules_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${legacy_enroll_hints_user_unit_path}" \
+		"${legacy_enroll_hints_user_unit_path}" \
+		"remove-path"
+	file_io_queue_enqueue \
+		"${legacy_enroll_hints_user_unit_wants_path}" \
+		"${legacy_enroll_hints_user_unit_wants_path}" \
 		"remove-path"
 }
 
@@ -331,6 +360,31 @@ host_restart_fprintd() {
 		log_info "${fprintd_unit_name} did not start; dbus activation will use distro libfprint"
 		return 0  # unit is current even if idle
 	fi
+}
+
+# Stop and delete a leftover PATH wrapper that shadowed
+# /usr/bin/fprintd-enroll. No-op when those files are already gone.
+host_remove_legacy_enroll_hints() {
+	local sudo_user_name="${SUDO_USER:-}"
+	local sudo_user_id=""
+	systemctl --global disable "${legacy_enroll_hints_user_unit_name}" 2>/dev/null || true
+	if [[ -n "${sudo_user_name}" && "${sudo_user_name}" != "root" ]]; then
+		systemctl --machine="${sudo_user_name}@" --user stop "${legacy_enroll_hints_user_unit_name}" 2>/dev/null || true
+		sudo_user_id="$(id -u "${sudo_user_name}" 2>/dev/null || true)"
+		if [[ -n "${sudo_user_id}" && -S "/run/user/${sudo_user_id}/bus" ]]; then
+			sudo -u "${sudo_user_name}" \
+				XDG_RUNTIME_DIR="/run/user/${sudo_user_id}" \
+				DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${sudo_user_id}/bus" \
+				systemctl --user stop "${legacy_enroll_hints_user_unit_name}" \
+				2>/dev/null || true
+		else
+			:
+		fi
+	else
+		:
+	fi
+	log_info "Stopped leftover enroll-hint unit if it was present"
+	return 0  # leftover unit stopped or never present
 }
 
 # =============================================================================

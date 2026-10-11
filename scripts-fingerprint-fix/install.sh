@@ -25,6 +25,15 @@ installed_fprintd_dropin_directory="/etc/systemd/system/fprintd.service.d"
 installed_fprintd_dropin_path="/etc/systemd/system/fprintd.service.d/sf514-egis0570.conf"
 installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 
+# Leftover PATH wrapper from a reverted enroll-hint experiment. If
+# fprintd-enroll stays under /var/usrlocal/bin it shadows /usr/bin.
+legacy_enroll_hints_script_path="/var/usrlocal/bin/sf514-egis0570-enroll-hints"
+legacy_enroll_wrapper_path="/var/usrlocal/bin/sf514-fprintd-enroll"
+legacy_fprintd_enroll_wrapper_path="/var/usrlocal/bin/fprintd-enroll"
+legacy_enroll_hints_user_unit_path="/etc/systemd/user/sf514-egis0570-enroll-hints.service"
+legacy_enroll_hints_user_unit_wants_path="/etc/systemd/user/graphical-session.target.wants/sf514-egis0570-enroll-hints.service"
+legacy_enroll_hints_user_unit_name="sf514-egis0570-enroll-hints.service"
+
 # --- SELinux: fprintd_t mmap of the overlay .so ---
 # Ostree Fedora maps /var/usrlocal onto /usr/local, so semanage rejects
 # a spec under /var/usrlocal there. A mutable SELinux host without that
@@ -91,6 +100,7 @@ main() {
 	host_reload_systemd_daemon
 	host_reload_udev_rules
 	host_restart_fprintd
+	host_remove_legacy_enroll_hints
 	log_info "Install complete. Overlay libfprint is at ${installed_library_soname_path}."
 	log_info "Run ${repository_fingerprint_scripts_directory_name}/verify.sh as your regular user."
 	log_info "Enrolled prints from the stock swipe driver will not match; enroll again with fprintd-enroll."
@@ -466,6 +476,37 @@ host_restart_fprintd() {
 		log_info "${fprintd_unit_name} did not start; dbus activation will use the loaded drop-in"
 		return 0  # unit is current even if idle
 	fi
+}
+
+# Delete a leftover PATH wrapper that shadowed /usr/bin/fprintd-enroll.
+# No-op when those files are already gone.
+host_remove_legacy_enroll_hints() {
+	local sudo_user_name="${SUDO_USER:-}"
+	local sudo_user_id=""
+	systemctl --global disable "${legacy_enroll_hints_user_unit_name}" 2>/dev/null || true
+	if [[ -n "${sudo_user_name}" && "${sudo_user_name}" != "root" ]]; then
+		systemctl --machine="${sudo_user_name}@" --user stop "${legacy_enroll_hints_user_unit_name}" 2>/dev/null || true
+		sudo_user_id="$(id -u "${sudo_user_name}" 2>/dev/null || true)"
+		if [[ -n "${sudo_user_id}" && -S "/run/user/${sudo_user_id}/bus" ]]; then
+			sudo -u "${sudo_user_name}" \
+				XDG_RUNTIME_DIR="/run/user/${sudo_user_id}" \
+				DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${sudo_user_id}/bus" \
+				systemctl --user stop "${legacy_enroll_hints_user_unit_name}" \
+				2>/dev/null || true
+		else
+			:
+		fi
+	else
+		:
+	fi
+	rm -f \
+		"${legacy_enroll_hints_script_path}" \
+		"${legacy_enroll_wrapper_path}" \
+		"${legacy_fprintd_enroll_wrapper_path}" \
+		"${legacy_enroll_hints_user_unit_path}" \
+		"${legacy_enroll_hints_user_unit_wants_path}"
+	log_info "Removed leftover enroll-hint wrapper if it was present"
+	return 0  # leftover wrapper gone or never present
 }
 
 # Confirm every file the installer copies is present in the repo.

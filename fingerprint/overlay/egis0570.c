@@ -3,7 +3,7 @@
  *
  * Press-mode overlay for USB 1c7a:0570 / 1c7a:0571. Host-side matching
  * stores 114x57 frames as FPI_PRINT_RAW and scores them with the
- * clean-room Gabor/NCC matcher in egis0570-ridge.c.
+ * clean-room contrast-normalize plus NCC matcher in egis0570-ridge.c.
  *
  * Copyright (C) 2021 Maxim Kolesnikov <kolesnikov@svyazcom.ru>
  * Copyright (C) 2021 Saeed/Ali Rk <saeed.ali.rahimi@gmail.com>
@@ -60,8 +60,8 @@ struct _FpDeviceEgis0570
   int      enroll_stage;
 
   guint8  *background;
-  guint8  *best_frame;
-  double   best_stddev;
+  guint8  *hold_frames[EGIS0570_HOLD_BURSTS];
+  int      hold_frame_count;
 };
 
 G_DECLARE_FINAL_TYPE (FpDeviceEgis0570, fpi_device_egis0570, FPI, DEVICE_EGIS0570, FpDevice);
@@ -70,6 +70,8 @@ G_DEFINE_TYPE (FpDeviceEgis0570, fpi_device_egis0570, FP_TYPE_DEVICE);
 static void loop_complete (FpiSsm *ssm, FpDevice *dev, GError *error);
 static void ssm_run_state (FpiSsm *ssm, FpDevice *dev);
 static void start_capture_loop (FpDevice *dev);
+static double best_score_against_template (const guint8 *probe_bytes,
+                                           GVariant     *gallery);
 
 static gboolean
 is_last_pkt (FpDevice *dev)
@@ -125,34 +127,116 @@ payload_has_finger (FpDeviceEgis0570 *self,
   return FALSE;
 }
 
+/* Free every stored hold burst and reset the count. */
 static void
-remember_best_frame (FpDeviceEgis0570 *self,
-                     const guint8     *payload)
+clear_hold_frames (FpDeviceEgis0570 *self)
+{
+  int hold_index;
+
+  for (hold_index = 0; hold_index < EGIS0570_HOLD_BURSTS; hold_index++)
+    g_clear_pointer (&self->hold_frames[hold_index], g_free);
+  self->hold_frame_count = 0;
+}
+
+/*
+ * Keep the highest-contrast frame of this 5-frame burst as the next
+ * hold slot. Verify scores every stored burst. Enroll stores every
+ * burst so one press contributes several micro-shifts of that
+ * fingertip strip.
+ */
+static void
+remember_hold_burst_frame (FpDeviceEgis0570 *self,
+                           const guint8     *payload)
 {
   guint8 candidate[EGIS0570_IMGSIZE];
-  guint8 subtracted[EGIS0570_IMGSIZE];
-  double mean_value;
-  double stddev_value;
+  int slot_index;
 
-  egis0570_ridge_pick_best_frame (payload,
-                                  self->background,
-                                  candidate,
-                                  EGIS0570_IMGSIZE,
-                                  EGIS0570_IMGCOUNT);
-  egis0570_ridge_subtract_background (candidate,
-                                      self->background,
-                                      subtracted,
-                                      EGIS0570_IMGSIZE);
-  mean_value = egis0570_ridge_frame_mean (subtracted, EGIS0570_IMGSIZE);
-  stddev_value = egis0570_ridge_frame_stddev (subtracted, EGIS0570_IMGSIZE, mean_value);
-
-  if (!self->best_frame)
-    self->best_frame = g_malloc (EGIS0570_IMGSIZE);
-
-  if (stddev_value >= self->best_stddev)
+  if (self->hold_frame_count >= EGIS0570_HOLD_BURSTS)
     {
-      memcpy (self->best_frame, candidate, EGIS0570_IMGSIZE);
-      self->best_stddev = stddev_value;
+      return; /* already have a full hold */
+    }
+  else
+    {
+      slot_index = self->hold_frame_count;
+      egis0570_ridge_pick_best_frame (payload,
+                                      self->background,
+                                      candidate,
+                                      EGIS0570_IMGSIZE,
+                                      EGIS0570_IMGCOUNT);
+      if (!self->hold_frames[slot_index])
+        self->hold_frames[slot_index] = g_malloc (EGIS0570_IMGSIZE);
+      memcpy (self->hold_frames[slot_index], candidate, EGIS0570_IMGSIZE);
+      self->hold_frame_count += 1;
+    }
+}
+
+/*
+ * Score each new hold burst against already stored enroll strips.
+ * Returns TRUE when the highest score is at or above
+ * EGIS0570_ENROLL_TOO_SIMILAR (same height on the fingertip).
+ * Writes that highest score into highest_similarity when the
+ * pointer is not NULL. First section (no gallery yet) is never
+ * too similar.
+ */
+static gboolean
+enroll_hold_is_too_similar (
+  FpDeviceEgis0570 *self,
+  GVariant         *existing_gallery,
+  double           *highest_similarity
+)
+{
+  int hold_index;
+  double best_similarity = -1.0;
+  guint8 subtracted[EGIS0570_IMGSIZE];
+
+  if (existing_gallery == NULL)
+    {
+      if (highest_similarity != NULL)
+        {
+          *highest_similarity = -1.0;
+        }
+      else
+        {
+          /* caller does not need the score */
+        }
+      return FALSE; /* first fingertip strip */
+    }
+  else
+    {
+      for (hold_index = 0; hold_index < self->hold_frame_count; hold_index++)
+        {
+          double score;
+
+          egis0570_ridge_subtract_background (self->hold_frames[hold_index],
+                                              self->background,
+                                              subtracted,
+                                              EGIS0570_IMGSIZE);
+          score = best_score_against_template (subtracted, existing_gallery);
+          if (score > best_similarity)
+            {
+              best_similarity = score;
+            }
+          else
+            {
+              /* this burst matches stored strips less */
+            }
+        }
+      if (highest_similarity != NULL)
+        {
+          *highest_similarity = best_similarity;
+        }
+      else
+        {
+          /* caller does not need the score */
+        }
+      if (best_similarity >= EGIS0570_ENROLL_TOO_SIMILAR)
+        {
+          return TRUE; /* same strip as an earlier section */
+        }
+      else
+        {
+          return FALSE; /* a different height on the fingertip */
+        }
     }
 }
 
@@ -199,28 +283,103 @@ best_score_against_template (const guint8 *probe_bytes,
   double best_score = -1.0;
 
   if (!gallery)
-    return best_score;
-
-  for (child_index = 0; child_index < g_variant_n_children (gallery); child_index++)
     {
-      g_autoptr(GVariant) child = g_variant_get_child_value (gallery, child_index);
+      return best_score; /* no stored frames */
+    }
+  else if (g_variant_is_of_type (gallery, G_VARIANT_TYPE ("ay")))
+    {
       gsize length = 0;
-      const guint8 *gallery_bytes;
-      double score;
+      const guint8 *gallery_bytes = g_variant_get_fixed_array (gallery, &length, 1);
 
-      gallery_bytes = g_variant_get_fixed_array (child, &length, 1);
-      if (!gallery_bytes || length != EGIS0570_IMGSIZE)
-        continue;
+      if (gallery_bytes && length == EGIS0570_IMGSIZE)
+        {
+          return egis0570_ridge_match_score (probe_bytes,
+                                             gallery_bytes,
+                                             EGIS0570_IMGWIDTH,
+                                             EGIS0570_IMGHEIGHT);
+        }
+      else
+        {
+          return best_score; /* unexpected single-frame size */
+        }
+    }
+  else if (!g_variant_is_of_type (gallery, G_VARIANT_TYPE ("aay")))
+    {
+      fp_warn ("gallery type %s is not aay", g_variant_get_type_string (gallery));
+      return best_score; /* unusable gallery */
+    }
+  else
+    {
+      for (child_index = 0; child_index < g_variant_n_children (gallery); child_index++)
+        {
+          g_autoptr(GVariant) child = g_variant_get_child_value (gallery, child_index);
+          gsize length = 0;
+          const guint8 *gallery_bytes;
+          double score;
 
-      score = egis0570_ridge_match_score (probe_bytes,
-                                          gallery_bytes,
-                                          EGIS0570_IMGWIDTH,
-                                          EGIS0570_IMGHEIGHT);
-      if (score > best_score)
-        best_score = score;
+          gallery_bytes = g_variant_get_fixed_array (child, &length, 1);
+          if (!gallery_bytes || length != EGIS0570_IMGSIZE)
+            {
+              continue; /* skip a truncated or non-byte child */
+            }
+          else
+            {
+              score = egis0570_ridge_match_score (probe_bytes,
+                                                  gallery_bytes,
+                                                  EGIS0570_IMGWIDTH,
+                                                  EGIS0570_IMGHEIGHT);
+              if (score > best_score)
+                {
+                  best_score = score;
+                }
+              else
+                {
+                  /* this gallery frame scored lower */
+                }
+            }
+        }
+
+      return best_score; /* highest z-score NCC across enrolled frames */
+    }
+}
+
+static void
+log_match_attempt (const char    *action_name,
+                   double         score,
+                   GVariant      *gallery,
+                   const guint8  *probe_bytes,
+                   int            hold_frame_count)
+{
+  double probe_mean;
+  double probe_stddev;
+  double probe_skin;
+  const gchar *gallery_type = "none";
+  gsize gallery_frames = 0;
+
+  probe_mean = egis0570_ridge_frame_mean (probe_bytes, EGIS0570_IMGSIZE);
+  probe_stddev = egis0570_ridge_frame_stddev (probe_bytes, EGIS0570_IMGSIZE, probe_mean);
+  probe_skin = egis0570_ridge_signal_fraction (probe_bytes, EGIS0570_IMGSIZE);
+  if (gallery)
+    {
+      gallery_type = g_variant_get_type_string (gallery);
+      gallery_frames = g_variant_n_children (gallery);
+    }
+  else
+    {
+      gallery_type = "none";
+      gallery_frames = 0;
     }
 
-  return best_score;
+  g_message ("%s score=%.4f threshold=%.2f gallery_type=%s gallery_frames=%lu probe_mean=%.2f probe_stddev=%.2f probe_skin=%.2f hold_frames=%d",
+             action_name,
+             score,
+             EGIS0570_MATCH_THRESHOLD,
+             gallery_type,
+             (unsigned long) gallery_frames,
+             probe_mean,
+             probe_stddev,
+             probe_skin,
+             hold_frame_count);
 }
 
 static void
@@ -292,7 +451,7 @@ accept_held_frame (FpDevice *dev)
   FpiDeviceAction action = fpi_device_get_current_action (dev);
   guint8 subtracted[EGIS0570_IMGSIZE];
 
-  if (!self->best_frame)
+  if (self->hold_frame_count <= 0)
     {
       if (action == FPI_DEVICE_ACTION_ENROLL)
         {
@@ -312,45 +471,116 @@ accept_held_frame (FpDevice *dev)
       return;
     }
 
-  egis0570_ridge_subtract_background (self->best_frame,
-                                      self->background,
-                                      subtracted,
-                                      EGIS0570_IMGSIZE);
-
   if (action == FPI_DEVICE_ACTION_ENROLL)
     {
       FpPrint *print = NULL;
       g_autoptr(GVariant) existing = NULL;
-      GVariant *updated;
+      GVariant *updated = NULL;
+      double highest_similarity = -1.0;
+      int hold_index;
 
       fpi_device_get_enroll_data (dev, &print);
       if (self->enroll_stage == 0)
         fpi_print_set_type (print, FPI_PRINT_RAW);
       g_object_get (print, "fpi-data", &existing, NULL);
-      updated = append_frame_to_print_data (existing, subtracted);
-      g_object_set (print, "fpi-data", updated, NULL);
 
-      self->enroll_stage += 1;
-      fpi_device_enroll_progress (dev, self->enroll_stage, print, NULL);
-
-      if (self->enroll_stage >= EGIS0570_ENROLL_STAGES)
+      if (enroll_hold_is_too_similar (self, existing, &highest_similarity))
         {
-          self->action_reported = TRUE;
-          fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
-          self->cancelling = TRUE;
+          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f hold_frames=%d (slide toward nail or joint)",
+                     self->enroll_stage + 1,
+                     highest_similarity,
+                     EGIS0570_ENROLL_TOO_SIMILAR,
+                     self->hold_frame_count);
+          fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
+                                      fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
+          return; /* same section; wait for lift and a different height */
+        }
+      else
+        {
+          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f hold_frames=%d (store this strip)",
+                     self->enroll_stage + 1,
+                     highest_similarity,
+                     EGIS0570_ENROLL_TOO_SIMILAR,
+                     self->hold_frame_count);
+          for (hold_index = 0; hold_index < self->hold_frame_count; hold_index++)
+            {
+              GVariant *next_gallery;
+
+              egis0570_ridge_subtract_background (self->hold_frames[hold_index],
+                                                  self->background,
+                                                  subtracted,
+                                                  EGIS0570_IMGSIZE);
+              next_gallery = append_frame_to_print_data (
+                updated != NULL ? updated : existing,
+                subtracted);
+              if (updated != NULL)
+                {
+                  g_variant_unref (updated);
+                }
+              else
+                {
+                  /* first burst of this section; existing stays on autoptr */
+                }
+              updated = g_variant_ref_sink (next_gallery);
+            }
+          g_object_set (print, "fpi-data", updated, NULL);
+          if (updated != NULL)
+            {
+              g_variant_unref (updated);
+            }
+          else
+            {
+              /* hold_frame_count was already checked above */
+            }
+
+          self->enroll_stage += 1;
+          fpi_device_enroll_progress (dev, self->enroll_stage, print, NULL);
+
+          if (self->enroll_stage >= EGIS0570_ENROLL_STAGES)
+            {
+              self->action_reported = TRUE;
+              fpi_device_enroll_complete (dev, g_object_ref (print), NULL);
+              self->cancelling = TRUE;
+            }
+          else
+            {
+              /* more fingertip strips remain */
+            }
         }
     }
   else if (action == FPI_DEVICE_ACTION_VERIFY)
     {
       FpPrint *template = NULL;
       g_autoptr(GVariant) gallery = NULL;
-      double score;
+      double best_score = -1.0;
+      guint8 best_subtracted[EGIS0570_IMGSIZE];
+      int hold_index;
 
       fpi_device_get_verify_data (dev, &template);
       g_object_get (template, "fpi-data", &gallery, NULL);
-      score = best_score_against_template (subtracted, gallery);
-      fp_dbg ("verify score=%f threshold=%f", score, EGIS0570_MATCH_THRESHOLD);
-      if (score >= EGIS0570_MATCH_THRESHOLD)
+      memset (best_subtracted, 0, EGIS0570_IMGSIZE);
+      for (hold_index = 0; hold_index < self->hold_frame_count; hold_index++)
+        {
+          double score;
+
+          egis0570_ridge_subtract_background (self->hold_frames[hold_index],
+                                              self->background,
+                                              subtracted,
+                                              EGIS0570_IMGSIZE);
+          score = best_score_against_template (subtracted, gallery);
+          if (score > best_score)
+            {
+              best_score = score;
+              memcpy (best_subtracted, subtracted, EGIS0570_IMGSIZE);
+            }
+          else
+            {
+              /* this burst scored lower */
+            }
+        }
+      log_match_attempt ("verify", best_score, gallery, best_subtracted,
+                         self->hold_frame_count);
+      if (best_score >= EGIS0570_MATCH_THRESHOLD)
         complete_verify_or_identify (dev, FPI_MATCH_SUCCESS, NULL);
       else
         complete_verify_or_identify (dev, FPI_MATCH_FAIL, NULL);
@@ -362,24 +592,40 @@ accept_held_frame (FpDevice *dev)
       guint template_index;
       FpPrint *matched = NULL;
       double best_score = -1.0;
+      guint8 best_subtracted[EGIS0570_IMGSIZE];
+      int hold_index;
 
       fpi_device_get_identify_data (dev, &templates);
-      for (template_index = 0; templates && template_index < templates->len; template_index++)
+      memset (best_subtracted, 0, EGIS0570_IMGSIZE);
+      for (hold_index = 0; hold_index < self->hold_frame_count; hold_index++)
         {
-          FpPrint *template = g_ptr_array_index (templates, template_index);
-          g_autoptr(GVariant) gallery = NULL;
-          double score;
-
-          g_object_get (template, "fpi-data", &gallery, NULL);
-          score = best_score_against_template (subtracted, gallery);
-          if (score > best_score)
+          egis0570_ridge_subtract_background (self->hold_frames[hold_index],
+                                              self->background,
+                                              subtracted,
+                                              EGIS0570_IMGSIZE);
+          for (template_index = 0; templates && template_index < templates->len; template_index++)
             {
-              best_score = score;
-              matched = template;
+              FpPrint *template = g_ptr_array_index (templates, template_index);
+              g_autoptr(GVariant) gallery = NULL;
+              double score;
+
+              g_object_get (template, "fpi-data", &gallery, NULL);
+              score = best_score_against_template (subtracted, gallery);
+              if (score > best_score)
+                {
+                  best_score = score;
+                  matched = template;
+                  memcpy (best_subtracted, subtracted, EGIS0570_IMGSIZE);
+                }
+              else
+                {
+                  /* this template scored lower */
+                }
             }
         }
 
-      fp_dbg ("identify score=%f threshold=%f", best_score, EGIS0570_MATCH_THRESHOLD);
+      log_match_attempt ("identify", best_score, NULL, best_subtracted,
+                         self->hold_frame_count);
       if (best_score >= EGIS0570_MATCH_THRESHOLD)
         complete_verify_or_identify (dev, FPI_MATCH_SUCCESS, matched);
       else
@@ -433,9 +679,8 @@ data_resp_cb (FpiUsbTransfer *transfer,
           fpi_device_report_finger_status_changes (dev,
                                                    FP_FINGER_STATUS_PRESENT,
                                                    FP_FINGER_STATUS_NONE);
-          self->best_stddev = -1.0;
-          g_clear_pointer (&self->best_frame, g_free);
-          remember_best_frame (self, transfer->buffer);
+          self->hold_frame_count = 0;
+          remember_hold_burst_frame (self, transfer->buffer);
           self->hold_bursts = 1;
           self->phase = EGIS0570_PHASE_HOLD_FINGER;
         }
@@ -444,7 +689,7 @@ data_resp_cb (FpiUsbTransfer *transfer,
     {
       if (finger)
         {
-          remember_best_frame (self, transfer->buffer);
+          remember_hold_burst_frame (self, transfer->buffer);
           self->hold_bursts += 1;
           if (self->hold_bursts >= EGIS0570_HOLD_BURSTS)
             {
@@ -620,8 +865,7 @@ start_capture_loop (FpDevice *dev)
   self->pkt_type = EGIS0570_PKT_INIT;
   self->phase = EGIS0570_PHASE_BACKGROUND;
   self->hold_bursts = 0;
-  self->best_stddev = -1.0;
-  g_clear_pointer (&self->best_frame, g_free);
+  clear_hold_frames (self);
   g_clear_pointer (&self->background, g_free);
 
   self->ssm = fpi_ssm_new (dev, ssm_run_state, SM_STATES_NUM);
@@ -645,7 +889,7 @@ dev_close (FpDevice *dev)
   GError *error = NULL;
 
   g_clear_pointer (&self->background, g_free);
-  g_clear_pointer (&self->best_frame, g_free);
+  clear_hold_frames (self);
   g_usb_device_release_interface (fpi_device_get_usb_device (dev), 0, 0, &error);
   fpi_device_close_complete (dev, error);
 }

@@ -3,8 +3,9 @@
 This repository is the **out-of-tree layer** for one laptop: Acer Swift
 SF514-52T. It holds every device fix that is not yet presented or
 merged upstream (kernel, alsa-ucm-conf, libfprint, firmware, and so
-on). Read `README.md` for users. This file is what to do when changing
-the tree.
+on). User docs: root `README.md` (chassis and index),
+`scripts-audio-fix/README.md`, `scripts-fingerprint-fix/README.md`.
+This file is what to do when changing the tree.
 
 Fixes **layer on the base system**. The base may be a mutable root or
 an ostree/immutable image. One installer must work on both.
@@ -52,7 +53,8 @@ their `_files/` trees **out of git**. They are local research only
 2. Keep units, udev rules, firmware helpers, and overlay sources
    **inside that tree** (or a directory it owns). Do not add a new
    top-level `systemd/` or `ucm2/` for a second area.
-3. Add a row to the Fixes table in `README.md`.
+3. Add a row to the Fixes table in root `README.md` and a
+   `scripts-<area>-fix/README.md` for install steps and findings.
 4. Add `scripts-<area>-fix/AGENTS.md` for load-bearing hardware rules
    that other areas must not break.
 

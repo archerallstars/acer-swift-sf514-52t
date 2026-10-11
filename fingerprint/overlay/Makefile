@@ -1,4 +1,4 @@
-# Build the Gabor/NCC matcher evaluation tool (no libusb, no glib).
+# Build the ridge NCC matcher evaluation tool (no libusb, no glib).
 CC ?= gcc
 
 CFLAGS ?= -O2 -g

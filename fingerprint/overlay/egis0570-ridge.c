@@ -1,10 +1,14 @@
 /*
  * Clean-room ridge matcher for EgisTec 0570 frames.
  *
- * Contrast-normalize, Gabor enhance with one global ridge
- * orientation, then normalized cross-correlation over a small
- * rotation and translation search. No vendor tables. Per-block
- * orientation on 114x57 jumped when the finger moved a few pixels.
+ * Contrast-normalize each 114x57 frame (z-score, clamp ±3), then
+ * normalized cross-correlation over rotation (±15°) and translation
+ * (±20 px). Live re-press on this pad passed at 0.65 / 0.49 with
+ * that formula. A bright-pixel mask (threshold 12) then dropped
+ * full-coverage re-presses (probe_skin 0.99–1.00, mean ~50) to
+ * ~0.36: ridge valleys sit near that threshold, and raw Pearson
+ * is more pressure-sensitive than clamped z-score. Same-hold
+ * capture dumps still score ~0.90; they are not a re-press test.
  *
  * Copyright (C) 2026 Acer Swift SF514-52T overlay
  * SPDX-License-Identifier: LGPL-2.1-or-later
@@ -16,14 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define EGIS0570_RIDGE_GABOR_RADIUS 5
-#define EGIS0570_RIDGE_GABOR_LAMBDA 5.0
-#define EGIS0570_RIDGE_GABOR_SIGMA 2.2
-#define EGIS0570_RIDGE_GABOR_GAMMA 0.65
-#define EGIS0570_RIDGE_TRANSLATION_RADIUS 10
+#define EGIS0570_RIDGE_TRANSLATION_RADIUS 20
 #define EGIS0570_RIDGE_ROTATION_STEP_DEGREES 5.0
-#define EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES 10.0
+#define EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES 15.0
+/* Geometric overlap must cover at least this fraction of the 114x57 pad. */
 #define EGIS0570_RIDGE_MIN_OVERLAP_FRACTION 0.45
+/* Journal-only: subtracted pixel at or above this value counts as signal. */
+#define EGIS0570_RIDGE_SIGNAL_THRESHOLD 12
 
 double
 egis0570_ridge_frame_mean (const uint8_t *frame_bytes,
@@ -164,6 +167,63 @@ egis0570_ridge_pick_best_frame (const uint8_t *capture_payload,
   free (subtracted);
 }
 
+/*
+ * Count pixels at or above the skin threshold. Returns 0 when the
+ * frame is missing or empty.
+ */
+static int
+egis0570_ridge_count_signal_pixels (const uint8_t *frame_bytes,
+                                    int            pixel_count)
+{
+  int pixel_index;
+  int signal_pixel_count = 0;
+
+  if (frame_bytes == NULL || pixel_count <= 0)
+    {
+      return 0; /* no frame to inspect */
+    }
+  else
+    {
+      for (pixel_index = 0; pixel_index < pixel_count; pixel_index++)
+        {
+          if (frame_bytes[pixel_index] >= EGIS0570_RIDGE_SIGNAL_THRESHOLD)
+            {
+              signal_pixel_count += 1;
+            }
+          else
+            {
+              /* empty-pad residual after subtract */
+            }
+        }
+      return signal_pixel_count; /* skin pixel count */
+    }
+}
+
+/*
+ * Return the fraction of pixels that look like finger after background
+ * subtract (0..1). Verify journal lines use this so a light or
+ * off-centre press is visible next to the match score.
+ */
+double
+egis0570_ridge_signal_fraction (const uint8_t *frame_bytes,
+                                int            pixel_count)
+{
+  if (frame_bytes == NULL || pixel_count <= 0)
+    {
+      return 0.0; /* no frame to inspect */
+    }
+  else
+    {
+      return (double) egis0570_ridge_count_signal_pixels (frame_bytes, pixel_count)
+             / (double) pixel_count; /* skin coverage */
+    }
+}
+
+/*
+ * Z-score source_bytes into normalized_pixels. Stddev is floored at
+ * 1.0 so a flat frame does not explode. Values are clamped to ±3 so
+ * a harder press does not dominate the correlation.
+ */
 static void
 egis0570_ridge_normalize (const uint8_t *source_bytes,
                           double        *normalized_pixels,
@@ -176,133 +236,47 @@ egis0570_ridge_normalize (const uint8_t *source_bytes,
   mean_value = egis0570_ridge_frame_mean (source_bytes, pixel_count);
   stddev_value = egis0570_ridge_frame_stddev (source_bytes, pixel_count, mean_value);
   if (stddev_value < 1.0)
-    stddev_value = 1.0;
+    {
+      stddev_value = 1.0;
+    }
+  else
+    {
+      /* measured contrast is already usable */
+    }
 
   for (pixel_index = 0; pixel_index < pixel_count; pixel_index++)
     {
       double value = ((double) source_bytes[pixel_index] - mean_value) / stddev_value;
       if (value < -3.0)
-        value = -3.0;
+        {
+          value = -3.0;
+        }
       else if (value > 3.0)
-        value = 3.0;
+        {
+          value = 3.0;
+        }
+      else
+        {
+          /* already in range */
+        }
       normalized_pixels[pixel_index] = value;
     }
 }
 
-static void
-egis0570_ridge_orientation_field (const double *normalized_pixels,
-                                  double       *orientation_radians,
-                                  int           frame_width_pixels,
-                                  int           frame_height_pixels)
-{
-  int pixel_x;
-  int pixel_y;
-  double gradient_xx = 0.0;
-  double gradient_yy = 0.0;
-  double gradient_xy = 0.0;
-  double orientation;
-  int pixel_count = frame_width_pixels * frame_height_pixels;
-
-  /*
-   * One orientation for the whole 114x57 frame. Per-block fields on a
-   * sensor this small jump when the finger moves a few pixels, and the
-   * later NCC search cannot undo that.
-   */
-  for (pixel_y = 0; pixel_y < frame_height_pixels; pixel_y++)
-    {
-      int north = (pixel_y > 0) ? pixel_y - 1 : pixel_y;
-      int south = (pixel_y + 1 < frame_height_pixels) ? pixel_y + 1 : pixel_y;
-      for (pixel_x = 0; pixel_x < frame_width_pixels; pixel_x++)
-        {
-          int west = (pixel_x > 0) ? pixel_x - 1 : pixel_x;
-          int east = (pixel_x + 1 < frame_width_pixels) ? pixel_x + 1 : pixel_x;
-          double gradient_x = normalized_pixels[pixel_y * frame_width_pixels + east]
-                              - normalized_pixels[pixel_y * frame_width_pixels + west];
-          double gradient_y = normalized_pixels[south * frame_width_pixels + pixel_x]
-                              - normalized_pixels[north * frame_width_pixels + pixel_x];
-          gradient_xx += gradient_x * gradient_x;
-          gradient_yy += gradient_y * gradient_y;
-          gradient_xy += gradient_x * gradient_y;
-        }
-    }
-
-  orientation = 0.5 * atan2 (2.0 * gradient_xy, gradient_xx - gradient_yy);
-  /* Ridge orientation is perpendicular to the intensity gradient. */
-  orientation += M_PI / 2.0;
-
-  for (pixel_x = 0; pixel_x < pixel_count; pixel_x++)
-    orientation_radians[pixel_x] = orientation;
-}
-
+/*
+ * Pearson correlation of z-scored pixels with gallery shifted by
+ * shift_x / shift_y. Every overlapping pixel is used, including
+ * ridge valleys. Returns -1 when the overlap is too small.
+ */
 static double
-egis0570_ridge_gabor_kernel (int    offset_x,
-                             int    offset_y,
-                             double orientation_radians)
-{
-  double cosine_value = cos (orientation_radians);
-  double sine_value = sin (orientation_radians);
-  double rotated_x = (double) offset_x * cosine_value + (double) offset_y * sine_value;
-  double rotated_y = -(double) offset_x * sine_value + (double) offset_y * cosine_value;
-  double gaussian = exp (-(rotated_x * rotated_x
-                           + EGIS0570_RIDGE_GABOR_GAMMA * EGIS0570_RIDGE_GABOR_GAMMA
-                             * rotated_y * rotated_y)
-                         / (2.0 * EGIS0570_RIDGE_GABOR_SIGMA * EGIS0570_RIDGE_GABOR_SIGMA));
-  return gaussian * cos (2.0 * M_PI * rotated_x / EGIS0570_RIDGE_GABOR_LAMBDA);
-}
-
-static void
-egis0570_ridge_gabor_enhance (const double *normalized_pixels,
-                              const double *orientation_radians,
-                              double       *enhanced_pixels,
-                              int           frame_width_pixels,
-                              int           frame_height_pixels)
-{
-  int pixel_x;
-  int pixel_y;
-  int kernel_x;
-  int kernel_y;
-
-  for (pixel_y = 0; pixel_y < frame_height_pixels; pixel_y++)
-    {
-      for (pixel_x = 0; pixel_x < frame_width_pixels; pixel_x++)
-        {
-          double orientation = orientation_radians[pixel_y * frame_width_pixels + pixel_x];
-          double accumulator = 0.0;
-          double weight_sum = 0.0;
-
-          for (kernel_y = -EGIS0570_RIDGE_GABOR_RADIUS; kernel_y <= EGIS0570_RIDGE_GABOR_RADIUS; kernel_y++)
-            {
-              int sample_y = pixel_y + kernel_y;
-              if (sample_y < 0 || sample_y >= frame_height_pixels)
-                continue;
-              for (kernel_x = -EGIS0570_RIDGE_GABOR_RADIUS; kernel_x <= EGIS0570_RIDGE_GABOR_RADIUS; kernel_x++)
-                {
-                  int sample_x = pixel_x + kernel_x;
-                  double kernel_weight;
-                  if (sample_x < 0 || sample_x >= frame_width_pixels)
-                    continue;
-                  kernel_weight = egis0570_ridge_gabor_kernel (kernel_x, kernel_y, orientation);
-                  accumulator += kernel_weight
-                                 * normalized_pixels[sample_y * frame_width_pixels + sample_x];
-                  weight_sum += fabs (kernel_weight);
-                }
-            }
-
-          if (weight_sum > 0.0)
-            enhanced_pixels[pixel_y * frame_width_pixels + pixel_x] = accumulator / weight_sum;
-          else
-            enhanced_pixels[pixel_y * frame_width_pixels + pixel_x] = 0.0;
-        }
-    }
-}
-
-static double
-egis0570_ridge_ncc_at_offset (const double *probe_pixels,
-                              const double *gallery_pixels,
-                              int           frame_width_pixels,
-                              int           frame_height_pixels,
-                              int           shift_x,
-                              int           shift_y)
+egis0570_ridge_ncc_at_offset (
+  const double *probe_pixels,
+  const double *gallery_pixels,
+  int           frame_width_pixels,
+  int           frame_height_pixels,
+  int           shift_x,
+  int           shift_y
+)
 {
   int pixel_x;
   int pixel_y;
@@ -326,41 +300,68 @@ egis0570_ridge_ncc_at_offset (const double *probe_pixels,
     {
       int gallery_y = pixel_y + shift_y;
       if (gallery_y < 0 || gallery_y >= frame_height_pixels)
-        continue;
-      for (pixel_x = 0; pixel_x < frame_width_pixels; pixel_x++)
         {
-          int gallery_x = pixel_x + shift_x;
-          double probe_value;
-          double gallery_value;
-          if (gallery_x < 0 || gallery_x >= frame_width_pixels)
-            continue;
-          probe_value = probe_pixels[pixel_y * frame_width_pixels + pixel_x];
-          gallery_value = gallery_pixels[gallery_y * frame_width_pixels + gallery_x];
-          sum_probe += probe_value;
-          sum_gallery += gallery_value;
-          sum_probe_squares += probe_value * probe_value;
-          sum_gallery_squares += gallery_value * gallery_value;
-          sum_product += probe_value * gallery_value;
-          overlap_count += 1.0;
+          continue; /* this probe row falls off the gallery */
+        }
+      else
+        {
+          for (pixel_x = 0; pixel_x < frame_width_pixels; pixel_x++)
+            {
+              int gallery_x = pixel_x + shift_x;
+              double probe_value;
+              double gallery_value;
+              if (gallery_x < 0 || gallery_x >= frame_width_pixels)
+                {
+                  continue; /* this probe column falls off the gallery */
+                }
+              else
+                {
+                  probe_value = probe_pixels[pixel_y * frame_width_pixels + pixel_x];
+                  gallery_value = gallery_pixels[gallery_y * frame_width_pixels + gallery_x];
+                  sum_probe += probe_value;
+                  sum_gallery += gallery_value;
+                  sum_probe_squares += probe_value * probe_value;
+                  sum_gallery_squares += gallery_value * gallery_value;
+                  sum_product += probe_value * gallery_value;
+                  overlap_count += 1.0;
+                }
+            }
         }
     }
 
   if (overlap_count < (double) minimum_overlap)
-    return -1.0;
-
-  numerator = overlap_count * sum_product - sum_probe * sum_gallery;
-  probe_variance = overlap_count * sum_probe_squares - sum_probe * sum_probe;
-  gallery_variance = overlap_count * sum_gallery_squares - sum_gallery * sum_gallery;
-  if (probe_variance <= 1e-9 || gallery_variance <= 1e-9)
-    return -1.0;
-
-  denominator = sqrt (probe_variance * gallery_variance);
-  if (denominator <= 1e-9)
-    return -1.0;
-
-  return numerator / denominator;
+    {
+      return -1.0; /* not enough overlapping pixels to score */
+    }
+  else
+    {
+      numerator = overlap_count * sum_product - sum_probe * sum_gallery;
+      probe_variance = overlap_count * sum_probe_squares - sum_probe * sum_probe;
+      gallery_variance = overlap_count * sum_gallery_squares - sum_gallery * sum_gallery;
+      if (probe_variance <= 1e-9 || gallery_variance <= 1e-9)
+        {
+          return -1.0; /* a side is constant, so correlation is undefined */
+        }
+      else
+        {
+          denominator = sqrt (probe_variance * gallery_variance);
+          if (denominator <= 1e-9)
+            {
+              return -1.0; /* degenerate correlation */
+            }
+          else
+            {
+              return numerator / denominator; /* Pearson on the overlapping window */
+            }
+        }
+    }
 }
 
+/*
+ * Rotate source_pixels around the frame centre into rotated_pixels
+ * using nearest-neighbour sampling. Pixels that fall outside the
+ * frame are written as 0.0 (the z-score mean).
+ */
 static void
 egis0570_ridge_rotate_nearest (const double *source_pixels,
                                double       *rotated_pixels,
@@ -387,43 +388,24 @@ egis0570_ridge_rotate_nearest (const double *source_pixels,
           int nearest_y = (int) floor (source_y + 0.5);
           if (nearest_x < 0 || nearest_x >= frame_width_pixels
               || nearest_y < 0 || nearest_y >= frame_height_pixels)
-            rotated_pixels[pixel_y * frame_width_pixels + pixel_x] = 0.0;
+            {
+              rotated_pixels[pixel_y * frame_width_pixels + pixel_x] = 0.0;
+            }
           else
-            rotated_pixels[pixel_y * frame_width_pixels + pixel_x] =
-              source_pixels[nearest_y * frame_width_pixels + nearest_x];
+            {
+              rotated_pixels[pixel_y * frame_width_pixels + pixel_x] =
+                source_pixels[nearest_y * frame_width_pixels + nearest_x];
+            }
         }
     }
 }
 
-static int
-egis0570_ridge_enhance_frame (const uint8_t *frame_bytes,
-                              double        *enhanced_pixels,
-                              int            frame_width_pixels,
-                              int            frame_height_pixels)
-{
-  int pixel_count = frame_width_pixels * frame_height_pixels;
-  double *normalized_pixels;
-  double *orientation_radians;
-
-  normalized_pixels = calloc ((size_t) pixel_count, sizeof (double));
-  orientation_radians = calloc ((size_t) pixel_count, sizeof (double));
-  if (normalized_pixels == NULL || orientation_radians == NULL)
-    {
-      free (normalized_pixels);
-      free (orientation_radians);
-      return 0;
-    }
-
-  egis0570_ridge_normalize (frame_bytes, normalized_pixels, pixel_count);
-  egis0570_ridge_orientation_field (normalized_pixels, orientation_radians,
-                                    frame_width_pixels, frame_height_pixels);
-  egis0570_ridge_gabor_enhance (normalized_pixels, orientation_radians,
-                                enhanced_pixels, frame_width_pixels, frame_height_pixels);
-  free (normalized_pixels);
-  free (orientation_radians);
-  return 1;
-}
-
+/*
+ * Score probe_bytes against gallery_bytes. Both must be 114x57
+ * background-subtracted frames. Returns the highest z-score NCC
+ * over the rotation and translation search, or -1 when the frames
+ * cannot be scored.
+ */
 double
 egis0570_ridge_match_score (const uint8_t *probe_bytes,
                             const uint8_t *gallery_bytes,
@@ -431,67 +413,75 @@ egis0570_ridge_match_score (const uint8_t *probe_bytes,
                             int            frame_height_pixels)
 {
   int pixel_count;
-  double *probe_enhanced;
-  double *gallery_enhanced;
+  double *probe_normalized;
+  double *gallery_normalized;
   double *rotated_probe;
   double best_score = -1.0;
   double rotation_degrees;
 
   if (probe_bytes == NULL || gallery_bytes == NULL
       || frame_width_pixels <= 0 || frame_height_pixels <= 0)
-    return -1.0;
-
-  pixel_count = frame_width_pixels * frame_height_pixels;
-  probe_enhanced = calloc ((size_t) pixel_count, sizeof (double));
-  gallery_enhanced = calloc ((size_t) pixel_count, sizeof (double));
-  rotated_probe = calloc ((size_t) pixel_count, sizeof (double));
-  if (probe_enhanced == NULL || gallery_enhanced == NULL || rotated_probe == NULL)
     {
-      free (probe_enhanced);
-      free (gallery_enhanced);
-      free (rotated_probe);
-      return -1.0;
+      return -1.0; /* missing frames or empty geometry */
     }
-
-  if (!egis0570_ridge_enhance_frame (probe_bytes, probe_enhanced,
-                                     frame_width_pixels, frame_height_pixels)
-      || !egis0570_ridge_enhance_frame (gallery_bytes, gallery_enhanced,
-                                        frame_width_pixels, frame_height_pixels))
+  else
     {
-      free (probe_enhanced);
-      free (gallery_enhanced);
-      free (rotated_probe);
-      return -1.0;
-    }
-
-  for (rotation_degrees = -EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES;
-       rotation_degrees <= EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES + 0.01;
-       rotation_degrees += EGIS0570_RIDGE_ROTATION_STEP_DEGREES)
-    {
-      int shift_x;
-      int shift_y;
-      double angle_radians = rotation_degrees * M_PI / 180.0;
-      egis0570_ridge_rotate_nearest (probe_enhanced, rotated_probe,
-                                     frame_width_pixels, frame_height_pixels,
-                                     angle_radians);
-      for (shift_y = -EGIS0570_RIDGE_TRANSLATION_RADIUS; shift_y <= EGIS0570_RIDGE_TRANSLATION_RADIUS; shift_y++)
+      pixel_count = frame_width_pixels * frame_height_pixels;
+      probe_normalized = calloc ((size_t) pixel_count, sizeof (double));
+      gallery_normalized = calloc ((size_t) pixel_count, sizeof (double));
+      rotated_probe = calloc ((size_t) pixel_count, sizeof (double));
+      if (probe_normalized == NULL || gallery_normalized == NULL
+          || rotated_probe == NULL)
         {
-          for (shift_x = -EGIS0570_RIDGE_TRANSLATION_RADIUS; shift_x <= EGIS0570_RIDGE_TRANSLATION_RADIUS; shift_x++)
+          free (probe_normalized);
+          free (gallery_normalized);
+          free (rotated_probe);
+          return -1.0; /* allocation failed */
+        }
+      else
+        {
+          egis0570_ridge_normalize (probe_bytes, probe_normalized, pixel_count);
+          egis0570_ridge_normalize (gallery_bytes, gallery_normalized, pixel_count);
+          for (rotation_degrees = -EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES;
+               rotation_degrees <= EGIS0570_RIDGE_ROTATION_LIMIT_DEGREES + 0.01;
+               rotation_degrees += EGIS0570_RIDGE_ROTATION_STEP_DEGREES)
             {
-              double score = egis0570_ridge_ncc_at_offset (rotated_probe,
-                                                           gallery_enhanced,
-                                                           frame_width_pixels,
-                                                           frame_height_pixels,
-                                                           shift_x,
-                                                           shift_y);
-              if (score > best_score)
-                best_score = score;
+              int shift_x;
+              int shift_y;
+              double angle_radians = rotation_degrees * M_PI / 180.0;
+              egis0570_ridge_rotate_nearest (probe_normalized, rotated_probe,
+                                             frame_width_pixels, frame_height_pixels,
+                                             angle_radians);
+              for (shift_y = -EGIS0570_RIDGE_TRANSLATION_RADIUS;
+                   shift_y <= EGIS0570_RIDGE_TRANSLATION_RADIUS;
+                   shift_y++)
+                {
+                  for (shift_x = -EGIS0570_RIDGE_TRANSLATION_RADIUS;
+                       shift_x <= EGIS0570_RIDGE_TRANSLATION_RADIUS;
+                       shift_x++)
+                    {
+                      double score = egis0570_ridge_ncc_at_offset (
+                        rotated_probe,
+                        gallery_normalized,
+                        frame_width_pixels,
+                        frame_height_pixels,
+                        shift_x,
+                        shift_y);
+                      if (score > best_score)
+                        {
+                          best_score = score;
+                        }
+                      else
+                        {
+                          /* this alignment scored lower */
+                        }
+                    }
+                }
             }
+          free (probe_normalized);
+          free (gallery_normalized);
+          free (rotated_probe);
+          return best_score; /* highest z-score NCC over rotation and translation */
         }
     }
-
-  free (probe_enhanced);
-  free (gallery_enhanced);
-  free (rotated_probe);
-  return best_score;
 }

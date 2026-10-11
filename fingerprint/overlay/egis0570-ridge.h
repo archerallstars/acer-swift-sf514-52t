@@ -1,6 +1,6 @@
 /*
  * Clean-room ridge matcher for EgisTec 0570 114x57 frames.
- * LGPL-2.1-or-later. No vendor coefficients.
+ * Contrast-normalize plus NCC. LGPL-2.1-or-later. No vendor coefficients.
  */
 
 #ifndef EGIS0570_RIDGE_H
@@ -30,6 +30,9 @@ double egis0570_ridge_match_score (const uint8_t *probe_bytes,
                                    const uint8_t *gallery_bytes,
                                    int            frame_width_pixels,
                                    int            frame_height_pixels);
+
+double egis0570_ridge_signal_fraction (const uint8_t *frame_bytes,
+                                       int            pixel_count);
 
 void egis0570_ridge_pick_best_frame (const uint8_t *capture_payload,
                                      const uint8_t *background_bytes,
