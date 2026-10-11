@@ -18,6 +18,7 @@ overlay_dropin_path_from_container="/run/host/etc/systemd/system/fprintd.service
 overlay_udev_path_on_host="/etc/udev/rules.d/70-sf514-egis0570.rules"
 overlay_udev_path_from_container="/run/host/etc/udev/rules.d/70-sf514-egis0570.rules"
 expected_selinux_type="lib_t"
+expected_selinux_unit_file_type="systemd_unit_file_t"
 expected_device_name_fragment="0570"
 fprintd_unit_name="fprintd.service"
 maps_overlay_fragment="/var/usrlocal/lib64/libfprint-2.so"
@@ -57,6 +58,7 @@ main() {
 	check_overlay_library_present
 	check_dropin_present
 	check_udev_rule_present
+	check_selinux_dropin_type
 	check_selinux_library_type
 	check_fprintd_lists_egis
 	check_fprintd_maps_overlay
@@ -225,6 +227,48 @@ check_overlay_library_present() {
 	else
 		report_fail "overlay-library" "missing ${overlay_library_path_on_host} (run install.sh)"
 		return 0  # recorded as fail
+	fi
+}
+
+# Require systemd_unit_file_t on the fprintd drop-in when SELinux is on.
+# user_home_t from a homedir copy means PID 1 cannot parse Environment=.
+check_selinux_dropin_type() {
+	local dropin_path="${resolved_dropin_path}"
+	local selinux_type
+	if [[ ! -e /sys/fs/selinux/enforce ]]; then
+		report_skip "selinux-drop-in" "SELinux is not enabled on this host"
+		return 0  # Debian/Ubuntu/Arch typically have no SELinux
+	else
+		:
+	fi
+	if [[ -z "${dropin_path}" || ! -f "${dropin_path}" ]]; then
+		report_fail "selinux-drop-in" "drop-in missing, cannot check type"
+		return 0  # recorded as fail
+	else
+		:
+	fi
+	if command -v getenforce >/dev/null 2>&1; then
+		if [[ "$(getenforce 2>/dev/null || true)" == "Disabled" ]]; then
+			report_skip "selinux-drop-in" "SELinux is disabled"
+			return 0  # nothing to check
+		else
+			:
+		fi
+	else
+		:
+	fi
+	if command -v ls >/dev/null 2>&1; then
+		selinux_type="$(ls -Z "${dropin_path}" 2>/dev/null | awk '{print $1}' | awk -F: '{print $3}')"
+		if [[ "${selinux_type}" == "${expected_selinux_unit_file_type}" ]]; then
+			report_pass "selinux-drop-in" "${dropin_path} is ${expected_selinux_unit_file_type}"
+			return 0  # systemd can read the drop-in
+		else
+			report_fail "selinux-drop-in" "${dropin_path} type is '${selinux_type}', expected ${expected_selinux_unit_file_type}"
+			return 0  # recorded as fail
+		fi
+	else
+		report_skip "selinux-drop-in" "cannot read file context"
+		return 0  # optional when ls -Z is unavailable
 	fi
 }
 

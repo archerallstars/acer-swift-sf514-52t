@@ -32,6 +32,8 @@ installed_udev_rules_path="/etc/udev/rules.d/70-sf514-egis0570.rules"
 selinux_overlay_fcontext_pattern_usr_local='/usr/local/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_pattern_var_usrlocal='/var/usrlocal/lib64/libfprint-2\.so(\..*)?'
 selinux_overlay_fcontext_type="lib_t"
+selinux_unit_file_type="systemd_unit_file_t"
+selinux_udev_rules_type="udev_rules_t"
 selinux_fs_enforce_path="/sys/fs/selinux/enforce"
 
 # --- AppArmor: allow fprintd to mmap the overlay when a profile exists ---
@@ -83,12 +85,8 @@ main() {
 	file_io_queue_drain
 	host_enqueue_install_copies
 	file_io_queue_drain
-	file_io_queue_enqueue \
-		"${installed_capture_binary_path}" \
-		"${installed_capture_binary_path}" \
-		"chmod-executable"
-	file_io_queue_drain
 	host_apply_selinux_library_context
+	host_apply_selinux_unit_file_context
 	host_apply_apparmor_fprintd_overlay
 	host_reload_systemd_daemon
 	host_reload_udev_rules
@@ -102,6 +100,10 @@ main() {
 # FILE I/O QUEUE
 # =============================================================================
 
+# Parallel arrays that hold pending local filesystem jobs. Kinds are
+# copy-executable, copy-file, copy-symlink, and create-directory.
+# copy-executable and copy-file call install(1) so the destination
+# gets the policy default SELinux type rather than user_home_t.
 file_io_job_source_paths=()
 file_io_job_destination_paths=()
 file_io_job_kinds=()
@@ -112,19 +114,13 @@ file_io_queue_apply_one_job() {
 	local source_path="$1"
 	local destination_path="$2"
 	local job_kind="$3"
-	if [[ "${job_kind}" == "copy-file" ]]; then
-		mkdir -p "$(dirname "${destination_path}")"
-		cp -a "${source_path}" "${destination_path}"
+	if [[ "${job_kind}" == "copy-executable" ]]; then
+		install -D -m 0755 "${source_path}" "${destination_path}"
+	elif [[ "${job_kind}" == "copy-file" ]]; then
+		install -D -m 0644 "${source_path}" "${destination_path}"
 	elif [[ "${job_kind}" == "copy-symlink" ]]; then
 		mkdir -p "$(dirname "${destination_path}")"
 		ln -sfn "${source_path}" "${destination_path}"
-	elif [[ "${job_kind}" == "chmod-executable" ]]; then
-		if [[ "${source_path}" == "${destination_path}" ]]; then
-			chmod 0755 "${destination_path}"
-		else
-			log_error "chmod-executable source and destination must be the same path"
-			exit 1
-		fi
 	elif [[ "${job_kind}" == "create-directory" ]]; then
 		if [[ "${source_path}" == "${destination_path}" ]]; then
 			mkdir -p "${destination_path}"
@@ -320,12 +316,51 @@ host_apply_selinux_library_context() {
 	fi
 }
 
+# Label the fprintd drop-in and udev rule with the policy defaults.
+# install(1) already creates them without the source user_home_t;
+# restorecon still fixes a leftover label from an older cp -a copy.
+# Skip when SELinux is off.
+host_apply_selinux_unit_file_context() {
+	local restorecon_executable_path
+	if [[ ! -e "${selinux_fs_enforce_path}" ]]; then
+		return 0  # no MAC label to fix
+	else
+		:
+	fi
+	if command -v restorecon >/dev/null 2>&1; then
+		restorecon_executable_path="$(command -v restorecon)"
+	elif [[ -x /usr/sbin/restorecon ]]; then
+		restorecon_executable_path="/usr/sbin/restorecon"
+	else
+		restorecon_executable_path=""
+	fi
+	if [[ -n "${restorecon_executable_path}" ]]; then
+		"${restorecon_executable_path}" -Fv \
+			"${installed_fprintd_dropin_directory}" \
+			"${installed_fprintd_dropin_path}" \
+			"${installed_udev_rules_path}" \
+			|| true
+	else
+		:
+	fi
+	if command -v chcon >/dev/null 2>&1; then
+		chcon -t "${selinux_unit_file_type}" \
+			"${installed_fprintd_dropin_path}" \
+			|| true
+		chcon -t "${selinux_udev_rules_type}" \
+			"${installed_udev_rules_path}" \
+			|| true
+	else
+		:
+	fi
+}
+
 # Queue copies of the overlay library, soname links, capture tool, and drop-in.
 host_enqueue_install_copies() {
 	file_io_queue_enqueue \
 		"${repository_root_directory}/fingerprint/dist/lib64/libfprint-2.so.2.0.0" \
 		"${installed_library_real_path}" \
-		"copy-file"
+		"copy-executable"
 	file_io_queue_enqueue \
 		"libfprint-2.so.2.0.0" \
 		"${installed_library_soname_path}" \
@@ -337,7 +372,7 @@ host_enqueue_install_copies() {
 	file_io_queue_enqueue \
 		"${repository_root_directory}/fingerprint/dist/bin/sf514-egis0570-capture" \
 		"${installed_capture_binary_path}" \
-		"copy-file"
+		"copy-executable"
 	file_io_queue_enqueue \
 		"${repository_root_directory}/systemd/sf514-egis0570.conf" \
 		"${installed_fprintd_dropin_path}" \
@@ -378,10 +413,13 @@ host_reload_udev_rules() {
 # is listed, then start the service. One daemon-reload plus restart
 # leaves the unit stale: udev USB add can activate fprintd on the old
 # unit, and inotify on the new drop-in directory can mark it dirty
-# again after the first reload.
+# again after the first reload. `systemctl cat` must include LD_LIBRARY_PATH.
+# The Environment property can be empty on a stopped dbus unit even when
+# the drop-in is merged.
 host_restart_fprintd() {
 	local dropin_paths=""
 	local fprintd_environment=""
+	local merged_unit_text=""
 	local reload_attempt=1
 	if systemctl stop "${fprintd_unit_name}"; then
 		log_info "Stopped ${fprintd_unit_name}"
@@ -406,12 +444,20 @@ host_restart_fprintd() {
 		systemctl show "${fprintd_unit_name}" -p DropInPaths --no-pager || true
 		exit 1
 	fi
+	merged_unit_text="$(systemctl cat "${fprintd_unit_name}" 2>/dev/null || true)"
+	if [[ "${merged_unit_text}" == *"LD_LIBRARY_PATH=${installed_library_directory}"* ]]; then
+		log_info "systemd cat includes LD_LIBRARY_PATH=${installed_library_directory}"
+	else
+		log_error "systemd cat of ${fprintd_unit_name} is missing overlay LD_LIBRARY_PATH"
+		systemctl cat "${fprintd_unit_name}" || true
+		ls -Z "${installed_fprintd_dropin_path}" || true
+		exit 1
+	fi
 	fprintd_environment="$(systemctl show -p Environment --value "${fprintd_unit_name}" 2>/dev/null || true)"
 	if [[ "${fprintd_environment}" == *"LD_LIBRARY_PATH=${installed_library_directory}"* ]]; then
 		log_info "fprintd Environment includes LD_LIBRARY_PATH=${installed_library_directory}"
 	else
-		log_error "fprintd Environment is missing overlay LD_LIBRARY_PATH: ${fprintd_environment}"
-		exit 1
+		log_info "fprintd Environment property is '${fprintd_environment}' (merged unit still has the drop-in)"
 	fi
 	if systemctl start "${fprintd_unit_name}"; then
 		log_info "Started ${fprintd_unit_name}"

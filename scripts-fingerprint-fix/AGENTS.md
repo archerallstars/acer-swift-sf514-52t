@@ -46,6 +46,10 @@ layering: root `AGENTS.md`.
   Without that equivalency, the spec is `/var/usrlocal/lib64/...`.
   Skip SELinux on hosts where `/sys/fs/selinux/enforce` is missing.
   `fprintd_t` will not mmap `tmp_t`.
+- Copy drop-in and udev files with `install(1)`. `cp -a` from `$HOME`
+  keeps `user_home_t`; systemd then lists the drop-in in DropInPaths
+  and still cannot parse `Environment=`. restorecon to
+  `systemd_unit_file_t` and `udev_rules_t`.
 - AppArmor: if a fprintd profile exists, append a local `mr` rule for
   `/var/usrlocal/lib64/libfprint-2.so*`. No-op when AppArmor is off.
 - `udev/70-sf514-egis0570.rules` is only for the capture tool (seat
