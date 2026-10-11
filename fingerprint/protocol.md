@@ -7,7 +7,8 @@ the node may show up as `nobody:nobody` `0664`; libusb_open still fails
 until the host udev ACL is present or the tool runs as host root.
 
 Only one process can claim the pad. Keep `fprintd.service` stopped while
-the capture tool runs.
+the capture tool runs. Live dumps are fingerprint images (gitignored);
+the tool writes the leaf directory at mode 0700 and each file at 0600.
 
 ```bash
 make -C fingerprint/capture

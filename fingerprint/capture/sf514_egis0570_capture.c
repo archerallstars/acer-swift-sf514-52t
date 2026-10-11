@@ -12,12 +12,16 @@
  * If the USB interface is busy, stop fprintd on the host first:
  *   sudo systemctl stop fprintd.service
  *
+ * Live dumps are fingerprint images. The output directory is mode 0700
+ * and each PGM is mode 0600. Delete them when diagnosis is done.
+ *
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
 #include "sf514_egis0570_protocol.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <libusb.h>
 #include <math.h>
 #include <pthread.h>
@@ -65,6 +69,14 @@ static const int configured_file_io_queue_capacity = 256;
 static const int configured_log_queue_capacity = 256;
 /* Pause after the log queue is empty so the Enter prompt is not buried. */
 static const int configured_log_drain_settle_microseconds = 20000;
+/*
+ * Live pad dumps can contain fingerprint images. The leaf output
+ * directory is owner-only. Intermediate parents stay 0755 so a
+ * dump under an existing repo tree still works. Each PGM is 0600.
+ */
+static const mode_t configured_capture_parent_directory_mode = 0755;
+static const mode_t configured_capture_directory_mode = 0700;
+static const mode_t configured_capture_file_mode = 0600;
 
 /* =============================================================================
  * LOGGER
@@ -830,8 +842,9 @@ file_io_queue_stop_worker (void)
 
 /*
  * Drain filesystem jobs until asked to stop. mkdir -p via a small
- * recursive walk; write-file uses fwrite. unused_argument is the
- * pthread start argument (always NULL).
+ * recursive walk (leaf directory 0700); write-file uses open(2) at
+ * mode 0600 then fwrite. unused_argument is the pthread start
+ * argument (always NULL).
  */
 static void *
 file_io_queue_worker (void *unused_argument)
@@ -870,7 +883,7 @@ file_io_queue_worker (void *unused_argument)
               if (*slash_position == '/')
                 {
                   *slash_position = '\0';
-                  if (mkdir (path_copy, 0755) != 0)
+                  if (mkdir (path_copy, configured_capture_parent_directory_mode) != 0)
                     {
                       if (errno == EEXIST)
                         {
@@ -892,11 +905,18 @@ file_io_queue_worker (void *unused_argument)
                   /* not a path separator */
                 }
             }
-          if (mkdir (path_copy, 0755) != 0)
+          if (mkdir (path_copy, configured_capture_directory_mode) != 0)
             {
               if (errno == EEXIST)
                 {
-                  /* destination already exists */
+                  if (chmod (path_copy, configured_capture_directory_mode) != 0)
+                    {
+                      file_io_queue_failed_job_count += 1;
+                    }
+                  else
+                    {
+                      /* existing dump directory tightened to 0700 */
+                    }
                 }
               else
                 {
@@ -905,31 +925,51 @@ file_io_queue_worker (void *unused_argument)
             }
           else
             {
-              /* destination created */
+              /* destination created 0700 */
             }
         }
       else if (current_job.job_kind == FILE_IO_JOB_KIND_WRITE_FILE)
         {
-          FILE *output_file = fopen (current_job.destination_path, "wb");
-          if (output_file == NULL)
+          int output_file_descriptor = open (
+            current_job.destination_path,
+            O_CREAT | O_WRONLY | O_TRUNC,
+            configured_capture_file_mode);
+          if (output_file_descriptor < 0)
             {
+              file_io_queue_failed_job_count += 1;
+            }
+          else if (fchmod (output_file_descriptor, configured_capture_file_mode) != 0)
+            {
+              close (output_file_descriptor);
               file_io_queue_failed_job_count += 1;
             }
           else
             {
-              size_t written_size = fwrite (
-                current_job.payload_bytes,
-                1,
-                current_job.payload_size_bytes,
-                output_file);
-              fclose (output_file);
-              if (written_size != current_job.payload_size_bytes)
+              FILE *output_file = fdopen (output_file_descriptor, "wb");
+              if (output_file == NULL)
                 {
+                  close (output_file_descriptor);
                   file_io_queue_failed_job_count += 1;
                 }
               else
                 {
-                  /* full write */
+                  size_t written_size = fwrite (
+                    current_job.payload_bytes,
+                    1,
+                    current_job.payload_size_bytes,
+                    output_file);
+                  if (fclose (output_file) != 0)
+                    {
+                      file_io_queue_failed_job_count += 1;
+                    }
+                  else if (written_size != current_job.payload_size_bytes)
+                    {
+                      file_io_queue_failed_job_count += 1;
+                    }
+                  else
+                    {
+                      /* full write at mode 0600 */
+                    }
                 }
             }
           free (current_job.payload_bytes);

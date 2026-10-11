@@ -165,7 +165,7 @@ That removes the drop-in, the overlay `.so` and soname links, the
 capture binary, and any SELinux fcontext or AppArmor snippet this repo
 added, then restarts fprintd onto the distro `libfprint-2.so.2`. It
 does **not** delete `/var/lib/fprint/`. Use `fprintd-delete "$USER"` if you
-want those prints gone.
+want those prints gone. See [Security](#security).
 
 ## Persistence across upgrades
 
@@ -175,6 +175,91 @@ want those prints gone.
 | `dnf` / `apt` / `pacman` upgrade | Distro `libfprint` in `/usr` may change. Overlay in `/var` stays. Rebuild if the ABI jumps. |
 | Layered-package churn | Unrelated. This overlay never adds `libfprint` to `LayeredPackages`. |
 | libfprint ABI jump | Overlay `.so` may be too old. Re-run `fingerprint/build-overlay.sh` on that distro, then `sudo ./scripts-fingerprint-fix/install.sh`. |
+
+## Security
+
+This overlay sits on the login path. Enrolled templates and optional
+diagnostic dumps are stored in the clear: distro fprintd files under
+`/var/lib/fprint/`, plus local PGM dumps from the capture tool.
+
+### Enrolled prints (`/var/lib/fprint/`)
+
+Enroll writes libfprint `FPI_PRINT_RAW` templates: up to nine 114×57
+frames (`aay` × 9, 6498 bytes each) as the driver's `fpi-data`. Those
+are **literal ridge pixels**, wrapped in libfprint's `FP3` serialize
+format (`fp_print_serialize`). They are reconstructable as PGM. Stock
+swipe `egis0570` stores NBIS minutiae in the same tree; this overlay
+stores images because the NCC matcher needs the pixels.
+
+fprintd (root) writes them under `/var/lib/fprint/<user>/…` with
+directory mode 0700 (`DIR_PERMS` in fprintd `file_storage.c`, systemd
+`StateDirectoryMode=0700`). File contents are unencrypted
+(`g_file_set_contents`). Protection is the host:
+
+- root-owned 0700 tree (other users cannot traverse it)
+- fprintd as root, D-Bus / polkit for enroll and verify
+- SELinux `fprintd_t` on Fedora; AppArmor where a fprintd profile exists
+- systemd sandbox (`ProtectSystem=strict`, `StateDirectory=fprint`)
+
+This is the same model as distro fprintd. Upstream treats stored prints
+as closer to a username than a password
+([fprintd issue 16](https://gitlab.freedesktop.org/libfprint/fprintd/-/issues/16);
+Ubuntu MIR). Root on the machine can read the pixels. Full-disk
+encryption on the host covers the store at rest when the disk is locked.
+
+`uninstall.sh` leaves `/var/lib/fprint/` in place so a reinstall can
+still verify. Remove prints with `fprintd-delete "$USER"`.
+
+### Diagnostic capture dumps
+
+`sf514-egis0570-capture` writes binary PGM frames plus a stats text
+file. Default directory `fingerprint/captures/` (also
+`scripts-fingerprint-fix/fingerprint/` if you copy there). Both paths
+are gitignored. These files **are** fingerprint images.
+
+The capture tool now creates the leaf output directory at mode 0700
+and each PGM at mode 0600 (`open` + `fchmod`). Older dumps from
+before that change may still be umask-default (often 0644); delete
+or `chmod 600` those files. Delete dumps when diagnosis is done.
+
+The udev rule `70-sf514-egis0570.rules` tags the pad `uaccess`, so
+the **logged-in seat user** can claim USB `1c7a:0570` and dump frames
+without being root. That is only for the capture tool. fprintd opens
+the pad as root. Only one process can claim the interface: stop
+fprintd first. A seat user with the capture binary can collect a live
+image of whoever presses the pad while fprintd is stopped. They still
+cannot read `/var/lib/fprint/` without root.
+
+### Overlay library on the login path
+
+Install copies a full `libfprint-2.so.2` to `/var/usrlocal/lib64/`
+(mode 0755) and points dbus-activated fprintd at it with
+`LD_LIBRARY_PATH`. That `.so` is the matcher and the USB driver for
+every fprintd request, including PAM. Write access to
+`/var/usrlocal/lib64` is equivalent to replacing the login matcher.
+Keep that directory root-owned. The installer uses `install(1)` and
+`restorecon` (`lib_t`) so `fprintd_t` can mmap it.
+
+Journal lines from the overlay are scores and frame statistics
+(`score=`, `probe_mean=`, `probe_skin=`). They do not dump pixels.
+
+### Matcher false-accept
+
+`EGIS0570_MATCH_THRESHOLD` is 0.48. Verify takes the **best** score
+across nine gallery frames and three live hold bursts. Adjacent
+fingers on the same hand are the hard case on a 114×57 landscape
+strip. There is no other-finger corpus yet, so the false-accept rate
+is unmeasured. Do not lower the threshold to chase 5/5. Stock NBIS
+`bz3_threshold` 25 on this pad size was already a weak control.
+
+### Host steps
+
+- Leave `/var/lib/fprint/` 0700 and root-owned.
+- Delete capture dumps after use (`rm -r fingerprint/captures`).
+- Do not copy PGM files into chat, git, or cloud sync.
+- After uninstall, run `fprintd-delete "$USER"` if those templates
+  should go with the overlay.
+- Keep `/var/usrlocal/lib64` root-owned.
 
 ## Findings
 
@@ -308,7 +393,8 @@ much machinery. It is gone. `install.sh` still deletes leftover
 ## Capture dumps (no overlay required)
 
 Only one process can claim the pad. Stop fprintd first. Live dumps
-can contain fingerprint images; they stay out of git.
+are fingerprint images: gitignored, leaf directory 0700, files 0600.
+See [Security](#security). Delete them when diagnosis is done.
 
 ```bash
 make -C fingerprint/capture
@@ -350,6 +436,30 @@ Score two captured PGM frames with the same matcher the overlay uses:
   `/var/usrlocal` without `restorecon` will fail to mmap.
 - Overlay `.so` must be rebuilt on the distro that runs fprintd
   (`fingerprint/build-overlay.sh`).
+- Enrolled templates and capture dumps are unencrypted ridge images.
+  Details: [Security](#security).
+
+## Upstream
+
+libfprint lives on GitLab
+([gitlab.freedesktop.org/libfprint/libfprint](https://gitlab.freedesktop.org/libfprint/libfprint)).
+The swipe `egis0570` driver is already in libfprint since v1.92.1
+(GitHub [indev29/egis0570](https://github.com/indev29/egis0570) is
+archived). There is no GitHub project that accepts libfprint driver
+PRs.
+
+This overlay is a chassis-tuned press-mode layer (Windows init,
+three-strip `FPI_PRINT_RAW` gallery, 0.48 z-score NCC) without an
+other-finger FAR corpus or a distinctive `full_name`. This repo is
+the delivery path. A later GitLab merge request would need a FAR
+corpus, a generic press-mode driver (or a new id so it can coexist
+with swipe `egis0570`), and tests. That work is out of v1.
+
+Audio already has GitHub PRs on
+[alsa-ucm-conf#871](https://github.com/alsa-project/alsa-ucm-conf/pull/871)
+and
+[alsa-ucm-conf#571](https://github.com/alsa-project/alsa-ucm-conf/pull/571).
+No extra fingerprint GitHub PR.
 
 ## License
 

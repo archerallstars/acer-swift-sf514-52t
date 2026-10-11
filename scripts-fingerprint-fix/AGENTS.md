@@ -97,8 +97,15 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
   `--init stock` is in-tree libfprint. Overlay `egis0570.h` uses the
   windows list (empty mean ~153, finger mean ~212 on this pad).
 - Do not add `libusb_reset_device` or `libusb_set_configuration`.
+- Live dumps are fingerprint images. Write the leaf output directory
+  at mode 0700 and each PGM at mode 0600. Keep both capture paths
+  gitignored. Do not commit dumps.
 
 ## Out of v1 unless the user asks
 
 - Vendor match-on-host engine.
-- Upstreaming the press-mode driver to libfprint.
+- Upstreaming the press-mode driver to libfprint (GitLab
+  gitlab.freedesktop.org/libfprint/libfprint). There is no GitHub
+  project that would take this overlay as a PR. GitHub
+  indev29/egis0570 is archived; swipe egis0570 is already in
+  libfprint v1.92.1.
