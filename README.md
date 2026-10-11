@@ -492,7 +492,9 @@ the pad:
 - fprintd drop-in present (`LD_LIBRARY_PATH=/var/usrlocal/lib64`)
 - SELinux type `lib_t` on the overlay `.so`
 - `fprintd-list` names Egis 0570
-- `/proc/$(pidof fprintd)/maps` shows the overlay library
+- Overlay library: `/proc/$(pidof fprintd)/maps` when readable,
+  otherwise the merged fprintd unit lists
+  `LD_LIBRARY_PATH=/var/usrlocal/lib64`
 
 `./scripts-fingerprint-fix/verify.sh --live` also enrolls (if this
 user has no prints) and runs `fprintd-verify` once.

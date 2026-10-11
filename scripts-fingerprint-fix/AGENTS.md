@@ -62,7 +62,9 @@ layering: root `AGENTS.md`.
   dbus-start fprintd. Then stop fprintd, daemon-reload until DropInPaths
   lists the drop-in, and start. `uninstall.sh` reverses that set only,
   with the same order.
-- `verify.sh` plumbing needs no finger. `--live` waits on the pad.
+- `verify.sh` plumbing needs no finger and no root. `/proc/<fprintd>/maps`
+  is often unreadable for a regular user; fall back to `systemctl cat`.
+  `--live` waits on the pad.
 - Host, not the container: scripts re-exec via `distrobox-host-exec`.
 
 ## Out of v1 unless the user asks

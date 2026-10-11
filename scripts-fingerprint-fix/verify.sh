@@ -22,6 +22,7 @@ expected_selinux_unit_file_type="systemd_unit_file_t"
 expected_device_name_fragment="0570"
 fprintd_unit_name="fprintd.service"
 maps_overlay_fragment="/var/usrlocal/lib64/libfprint-2.so"
+overlay_ld_library_path="/var/usrlocal/lib64"
 
 # =============================================================================
 # LOGGER AND CHECK COUNTERS
@@ -148,19 +149,24 @@ check_fprintd_lists_egis() {
 	fi
 }
 
-# After fprintd-list, require /proc/$(pidof fprintd)/maps to include the overlay.
+# After fprintd-list, require the running daemon to load the overlay.
+# Regular users cannot read /proc/<root-pid>/maps even when the mode
+# looks world-readable (kernel ptrace check). Fall back to the merged unit
+# listing LD_LIBRARY_PATH.
 check_fprintd_maps_overlay() {
 	local fprintd_pid
 	local maps_path
 	local maps_text
+	local merged_unit_text
+	local fprintd_environment
 	fprintd_pid="$(pidof fprintd 2>/dev/null || true)"
+	fprintd_pid="${fprintd_pid%% *}"
 	if [[ -z "${fprintd_pid}" ]]; then
 		report_fail "fprintd-maps" "fprintd is not running (fprintd-list should have started it)"
 		return 0  # recorded as fail
 	else
 		maps_path="/proc/${fprintd_pid}/maps"
-		if [[ -r "${maps_path}" ]]; then
-			maps_text="$(<"${maps_path}")"
+		if maps_text="$(cat "${maps_path}" 2>/dev/null)"; then
 			if [[ "${maps_text}" == *"${maps_overlay_fragment}"* ]]; then
 				report_pass "fprintd-maps" "pid ${fprintd_pid} maps ${maps_overlay_fragment}"
 				return 0  # overlay library is loaded
@@ -169,8 +175,16 @@ check_fprintd_maps_overlay() {
 				return 0  # recorded as fail
 			fi
 		else
-			report_fail "fprintd-maps" "cannot read ${maps_path}"
-			return 0  # recorded as fail
+			merged_unit_text="$(systemctl cat "${fprintd_unit_name}" 2>/dev/null || true)"
+			fprintd_environment="$(systemctl show -p Environment --value "${fprintd_unit_name}" 2>/dev/null || true)"
+			if [[ "${merged_unit_text}" == *"LD_LIBRARY_PATH=${overlay_ld_library_path}"* ]] \
+				|| [[ "${fprintd_environment}" == *"LD_LIBRARY_PATH=${overlay_ld_library_path}"* ]]; then
+				report_pass "fprintd-maps" "pid ${fprintd_pid} maps unreadable; unit has LD_LIBRARY_PATH=${overlay_ld_library_path}"
+				return 0  # overlay path is on the running unit
+			else
+				report_fail "fprintd-maps" "cannot read ${maps_path} and the fprintd unit is missing LD_LIBRARY_PATH=${overlay_ld_library_path}"
+				return 0  # recorded as fail
+			fi
 		fi
 	fi
 }
