@@ -47,12 +47,15 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
 - Matcher is clean-room contrast-normalize plus NCC in
   `egis0570-ridge.c` (translation ±20 px). Verify takes the best
   score across the three hold bursts and every stored enroll strip.
-  Enroll is three sections (nail / centre / joint). A section that
-  scores ≥ 0.50 against an already stored strip is retried
-  (`FP_DEVICE_RETRY_CENTER_FINGER`) so the gallery covers different
-  heights on the fingertip. Each section stores every hold burst.
-  Do not bring back the mean≥28 / skin≥0.55 enroll gate. No vendor
-  engine unless Phase 4 on a live corpus fails.
+  Enroll is three sections in a consecutive sweet band (nail /
+  neighbour / neighbour). A section that scores ≥ 0.50 against an
+  already stored strip is too similar (slide more). A section that
+  scores ≤ 0.25 against every stored strip jumped a gap (slide
+  less). Both retry `FP_DEVICE_RETRY_CENTER_FINGER`. Verify stays
+  best single-strip NCC ≥ 0.48; do not stitch sections or lower
+  MATCH_THRESHOLD to cover a gap. Each section stores every hold
+  burst. Do not bring back the mean≥28 / skin≥0.55 enroll gate. No
+  vendor engine unless Phase 4 on a live corpus fails.
 - `systemd/sf514-egis0570.conf` must keep `LD_LIBRARY_PATH` on
   `/var/usrlocal/lib64` so it works when `/usr/local` is not a symlink.
 - Overlay files always go under `/var/usrlocal` and `/etc`, never

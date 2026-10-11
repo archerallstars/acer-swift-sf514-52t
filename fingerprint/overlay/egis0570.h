@@ -91,17 +91,26 @@ static unsigned char repeat_pkts[][EGIS0570_PKTSIZE] =
  * across a portrait fingertip, so each press is a different height
  * on the finger (toward the nail, centre, toward the joint). Each
  * press stores every hold burst. Verify scores the probe against
- * all stored strips and keeps the best.
+ * all stored strips and keeps the best. Consecutive strips after
+ * the first must sit in the sweet band below.
  */
 #define EGIS0570_ENROLL_STAGES 3
 
 /*
- * A new enroll press that matches an already stored strip this
- * well is the same height on the finger. Ask the user to slide
- * toward the nail or the joint. Same-finger re-presses on this
- * pad cluster around 0.43–0.55.
+ * Sweet band for enroll strips 2 and 3. Score is the best z-score
+ * NCC against already stored strips (same matcher as verify).
+ *
+ *   >= EGIS0570_ENROLL_TOO_SIMILAR  same height → slide more
+ *   in (TOO_FAR, TOO_SIMILAR)       neighbour overlap → store
+ *   <= EGIS0570_ENROLL_TOO_FAR      jumped a gap → slide less
+ *
+ * Same-finger re-presses on this pad cluster around 0.43–0.55.
+ * Live login misses in a gap were 0.23–0.28; TOO_FAR sits on
+ * that cliff so those jumps retry. Do not lower MATCH_THRESHOLD
+ * to cover a gap; photograph the skin at enroll instead.
  */
 #define EGIS0570_ENROLL_TOO_SIMILAR 0.50
+#define EGIS0570_ENROLL_TOO_FAR 0.25
 
 /*
  * Clean-room ridge matcher accept point. Tuned to reject adjacent-finger

@@ -63,13 +63,14 @@ Z-score NCC against the first enrollment, 14 live verifies: one
 pass (0.5534), six near-misses 0.43–0.47, rest 0.30–0.39. 1/14 is
 below the Windows 3–4/5 bar. The tight enroll quality gate
 (mean ≥ 28, skin ≥ 0.55) then made enroll itself too hard. Enroll
-is now three fingertip strips; a new strip that scores ≥ 0.50
-against a stored one is retried so the gallery covers nail /
-centre / joint. Each strip stores all three hold bursts. Verify
-already takes the best score against every stored frame.
-Threshold stays 0.48 until an other-finger corpus exists.
-Journal: `verify score=`, `probe_skin=`, `hold_frames=`,
-`enroll section=`.
+is now three fingertip strips in a consecutive sweet band: a new
+strip ≥ 0.50 against a stored one is the same height (slide more);
+≤ 0.25 against every stored strip jumped a gap (slide less). Each
+strip stores all three hold bursts. Verify already takes the best
+score against every stored frame. Threshold stays 0.48 until an
+other-finger corpus exists. Sweet-band enroll is live-tested on this
+chassis. Journal: `verify score=`, `probe_skin=`, `hold_frames=`,
+`enroll section=`, `too_similar_at=`, `too_far_at=`.
 
 ## Live pad images (this chassis)
 

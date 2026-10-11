@@ -22,6 +22,7 @@ Deeper research notes: [`fingerprint/diagnosis.md`](../fingerprint/diagnosis.md)
 | Type | Landscape press pad below the arrow keys (finger sits portrait), five 114×57 frames per capture |
 | Stock driver | Fedora `egis0570` (swipe + NBIS) |
 | Overlay matcher | z-score NCC, threshold 0.48 |
+| Enroll | 3 neighbouring strips, sweet band 0.25–0.50 |
 | Quality bar | Official Windows driver on this chassis is about 3–4 accepts out of 5 |
 
 ```
@@ -40,7 +41,7 @@ Live on Fedora Silverblue 44 on this chassis:
 | Step | Result |
 | --- | --- |
 | Enumerate | `fprintd-list` names Egis 0570, `scan-type` is `press` |
-| Enroll | three stages (nail / centre / joint), gallery `aay` × 9 |
+| Enroll | three neighbouring stages (sweet band 0.25–0.50), gallery `aay` × 9 |
 | Verify | same-finger hit rate matches Windows on this pad (about 3–4 out of 5) |
 | Login | PAM is left to the distro (`authselect enable-feature with-fingerprint`) |
 
@@ -112,19 +113,19 @@ sits portrait on it, so each press is only one height of the fingertip.
 That is how this sensor is used, including on the official Windows
 driver.
 
-Three enroll presses, **different heights** on the same finger:
+Three enroll presses, **neighbouring heights** on the same finger:
 
 1. Toward the nail
-2. Centre of the pad
-3. Toward the joint
+2. A little toward the joint (overlap the first strip)
+3. A little farther toward the joint (overlap the second)
 
-Hold about a second, then lift. If fprintd says the finger is not
-centered, the new strip looks like one you already stored — slide
-up or down and try that stage again. Verify matches the live press
-against any stored strip.
+Hold about a second, then lift. Slide only a little between presses
+so the three strips form a continuous band. If fprintd says the
+finger is not centered, the journal says either slide toward nail
+or joint (same height as a stored strip) or slide less (jumped a
+gap). Verify matches the live press against any stored strip.
 
-`fprintd-delete` needs a username (`fprintd-delete "$USER"`). A bare
-invocation only prints usage.
+`fprintd-delete` needs a username. A bare invocation only prints usage.
 
 ## Verify
 
@@ -251,6 +252,8 @@ fingers on the same hand are the hard case on a 114×57 landscape
 strip. There is no other-finger corpus yet, so the false-accept rate
 is unmeasured. Do not lower the threshold to chase 5/5. Stock NBIS
 `bz3_threshold` 25 on this pad size was already a weak control.
+Sweet-band enroll only chooses which skin those nine frames came
+from; unlock is still one live strip vs the gallery at 0.48.
 
 ### Host steps
 
@@ -328,11 +331,15 @@ press is one horizontal strip of the fingertip. Phone-side sensors
 force full coverage by geometry; this one does not. Sliding toward
 the nail or the joint is a different strip.
 
-Enroll is three sections. A new strip that scores ≥ 0.50 against a
-stored one is retried (`enroll-finger-not-centered`). Each section
-stores all three hold bursts, so the gallery is `aay` × 9. Verify
-takes the best score across every stored frame and the three live
-hold bursts.
+Enroll is three sections in a consecutive **sweet band**. A new
+strip that scores ≥ 0.50 against a stored one is the same height
+(slide more). A strip that scores ≤ 0.25 against every stored one
+jumped a gap (slide less). Both retry as
+`enroll-finger-not-centered`. A neighbour in between is stored.
+Each section stores all three hold bursts, so the gallery is
+`aay` × 9. Verify is unchanged: best single-strip NCC ≥ 0.48
+across every stored frame and the three live hold bursts. Journal:
+`too_similar_at=` and `too_far_at=`.
 
 Eight identical-height stages and a mean/skin quality gate both
 failed on this pad: people cannot place the finger on the same
@@ -356,9 +363,12 @@ on the same pad reached that bar. Example session (threshold 0.48,
 | 0.4967 | pass |
 | 0.5410 | pass |
 
-That is 5/7 in this sample, in the same band as Windows. Misses still
-happen with a well-placed finger. Do not lower the threshold to chase
-5/5.
+That is 5/7 in this sample, in the same band as Windows. The two
+misses (0.28 and 0.23) were presses in a gap between far-apart
+enroll islands. Consecutive sweet-band enroll (0.25–0.50) photographs
+that in-between skin. Live-tested on this chassis after that change.
+Misses can still happen with a well-placed finger. Do not lower the
+threshold to chase 5/5.
 
 ### Overlay load on ostree
 
@@ -427,7 +437,9 @@ Score two captured PGM frames with the same matcher the overlay uses:
 ## Limits (fingerprint v1)
 
 - Matcher threshold 0.48 is a starting point. A too-low value accepts
-  the wrong finger. Do not lower it to chase 5/5.
+  the wrong finger. Do not lower it to chase 5/5. Enroll sweet-band
+  `TOO_FAR` 0.25 is live-tested on this chassis (from those 0.23–0.28
+  gap misses).
 - 114×57 is a small landscape pad with a portrait finger. Adjacent
   fingers on the same hand are the hard case. No other-finger corpus
   yet.

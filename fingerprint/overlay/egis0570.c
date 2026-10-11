@@ -44,6 +44,19 @@ enum sm_states {
   SM_STATES_NUM
 };
 
+/*
+ * Where a new enroll press sits relative to strips already stored.
+ * FIRST has no gallery yet. NEIGHBOUR is the sweet band. TOO_SIMILAR
+ * and TOO_FAR are retried so the three stages form a continuous band.
+ */
+enum Egis0570EnrollStripSpacing
+{
+  EGIS0570_ENROLL_STRIP_SPACING_FIRST = 0,
+  EGIS0570_ENROLL_STRIP_SPACING_NEIGHBOUR,
+  EGIS0570_ENROLL_STRIP_SPACING_TOO_SIMILAR,
+  EGIS0570_ENROLL_STRIP_SPACING_TOO_FAR,
+};
+
 struct _FpDeviceEgis0570
 {
   FpDevice parent;
@@ -72,6 +85,10 @@ static void ssm_run_state (FpiSsm *ssm, FpDevice *dev);
 static void start_capture_loop (FpDevice *dev);
 static double best_score_against_template (const guint8 *probe_bytes,
                                            GVariant     *gallery);
+static enum Egis0570EnrollStripSpacing enroll_classify_strip_spacing (
+  FpDeviceEgis0570 *self,
+  GVariant         *existing_gallery,
+  double           *highest_similarity);
 
 static gboolean
 is_last_pkt (FpDevice *dev)
@@ -171,15 +188,18 @@ remember_hold_burst_frame (FpDeviceEgis0570 *self,
 }
 
 /*
- * Score each new hold burst against already stored enroll strips.
- * Returns TRUE when the highest score is at or above
- * EGIS0570_ENROLL_TOO_SIMILAR (same height on the fingertip).
- * Writes that highest score into highest_similarity when the
- * pointer is not NULL. First section (no gallery yet) is never
- * too similar.
+ * Place this hold against already stored enroll strips.
+ *
+ * existing_gallery is the print's fpi-data (NULL on the first
+ * section). highest_similarity receives the best z-score NCC of
+ * the hold bursts against that gallery, or -1.0 when there is
+ * nothing to score. First section is always FIRST. A later
+ * section must sit in the sweet band: below TOO_SIMILAR and
+ * above TOO_FAR. A score below 0 (unusable gallery) does not
+ * block enroll.
  */
-static gboolean
-enroll_hold_is_too_similar (
+static enum Egis0570EnrollStripSpacing
+enroll_classify_strip_spacing (
   FpDeviceEgis0570 *self,
   GVariant         *existing_gallery,
   double           *highest_similarity
@@ -199,7 +219,7 @@ enroll_hold_is_too_similar (
         {
           /* caller does not need the score */
         }
-      return FALSE; /* first fingertip strip */
+      return EGIS0570_ENROLL_STRIP_SPACING_FIRST; /* no stored strips yet */
     }
   else
     {
@@ -229,13 +249,21 @@ enroll_hold_is_too_similar (
         {
           /* caller does not need the score */
         }
-      if (best_similarity >= EGIS0570_ENROLL_TOO_SIMILAR)
+      if (best_similarity < 0.0)
         {
-          return TRUE; /* same strip as an earlier section */
+          return EGIS0570_ENROLL_STRIP_SPACING_NEIGHBOUR; /* unusable score, do not block */
+        }
+      else if (best_similarity >= EGIS0570_ENROLL_TOO_SIMILAR)
+        {
+          return EGIS0570_ENROLL_STRIP_SPACING_TOO_SIMILAR; /* same height as a stored strip */
+        }
+      else if (best_similarity <= EGIS0570_ENROLL_TOO_FAR)
+        {
+          return EGIS0570_ENROLL_STRIP_SPACING_TOO_FAR; /* jumped a gap along the finger */
         }
       else
         {
-          return FALSE; /* a different height on the fingertip */
+          return EGIS0570_ENROLL_STRIP_SPACING_NEIGHBOUR; /* sweet band, photograph this skin */
         }
     }
 }
@@ -478,29 +506,52 @@ accept_held_frame (FpDevice *dev)
       GVariant *updated = NULL;
       double highest_similarity = -1.0;
       int hold_index;
+      enum Egis0570EnrollStripSpacing strip_spacing;
 
       fpi_device_get_enroll_data (dev, &print);
       if (self->enroll_stage == 0)
-        fpi_print_set_type (print, FPI_PRINT_RAW);
-      g_object_get (print, "fpi-data", &existing, NULL);
-
-      if (enroll_hold_is_too_similar (self, existing, &highest_similarity))
         {
-          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f hold_frames=%d (slide toward nail or joint)",
-                     self->enroll_stage + 1,
-                     highest_similarity,
-                     EGIS0570_ENROLL_TOO_SIMILAR,
-                     self->hold_frame_count);
-          fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
-                                      fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
-          return; /* same section; wait for lift and a different height */
+          fpi_print_set_type (print, FPI_PRINT_RAW);
         }
       else
         {
-          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f hold_frames=%d (store this strip)",
+          /* later sections keep the RAW type set on the first */
+        }
+      g_object_get (print, "fpi-data", &existing, NULL);
+
+      strip_spacing = enroll_classify_strip_spacing (self, existing,
+                                                     &highest_similarity);
+      if (strip_spacing == EGIS0570_ENROLL_STRIP_SPACING_TOO_SIMILAR)
+        {
+          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f too_far_at=%.2f hold_frames=%d (slide toward nail or joint)",
                      self->enroll_stage + 1,
                      highest_similarity,
                      EGIS0570_ENROLL_TOO_SIMILAR,
+                     EGIS0570_ENROLL_TOO_FAR,
+                     self->hold_frame_count);
+          fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
+                                      fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
+          return; /* same height; wait for lift and a neighbour strip */
+        }
+      else if (strip_spacing == EGIS0570_ENROLL_STRIP_SPACING_TOO_FAR)
+        {
+          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f too_far_at=%.2f hold_frames=%d (slide less, stay near the last strip)",
+                     self->enroll_stage + 1,
+                     highest_similarity,
+                     EGIS0570_ENROLL_TOO_SIMILAR,
+                     EGIS0570_ENROLL_TOO_FAR,
+                     self->hold_frame_count);
+          fpi_device_enroll_progress (dev, self->enroll_stage, NULL,
+                                      fpi_device_retry_new (FP_DEVICE_RETRY_CENTER_FINGER));
+          return; /* jumped a gap; wait for lift and a closer strip */
+        }
+      else
+        {
+          g_message ("enroll section=%d similarity=%.4f too_similar_at=%.2f too_far_at=%.2f hold_frames=%d (store this strip)",
+                     self->enroll_stage + 1,
+                     highest_similarity,
+                     EGIS0570_ENROLL_TOO_SIMILAR,
+                     EGIS0570_ENROLL_TOO_FAR,
                      self->hold_frame_count);
           for (hold_index = 0; hold_index < self->hold_frame_count; hold_index++)
             {
