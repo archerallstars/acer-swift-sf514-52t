@@ -91,6 +91,23 @@ fingerprint login starts a locked keyring and shows the dialog.
 This overlay does not change PAM or gnome-keyring. Type the account
 password in that dialog when it appears.
 
+Upstream (GNOME). Unlocking the login keyring with a fingerprint is
+**not** going to be implemented: a scan is a yes/no match, not the
+AES password the keyring is encrypted with.
+
+- [gnome-keyring#1](https://gitlab.gnome.org/GNOME/gnome-keyring/-/issues/1)
+  (closed, Not Actionable): keyring not unlocked after fingerprint
+  login.
+- [gdm#613](https://gitlab.gnome.org/GNOME/gdm/-/issues/613) (open):
+  password prompt for the keyring after fingerprint login.
+- [gdm#619](https://gitlab.gnome.org/GNOME/gdm/-/issues/619) (open):
+  do not offer fingerprint on a **fresh** GDM login.
+- [gdm#1043](https://gitlab.gnome.org/GNOME/gdm/-/issues/1043) (open):
+  password at first login, fingerprint only for the lock screen.
+
+GNOME’s open work is that GDM split, not decrypting `login.keyring`
+from the pad.
+
 ## Install
 
 Build (meson, ninja, gcc, libusb, glib, gusb), then install as root
