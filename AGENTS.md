@@ -4,7 +4,8 @@ This repository is the **out-of-tree layer** for one laptop: Acer Swift
 SF514-52T. It holds every device fix that is not yet presented or
 merged upstream (kernel, alsa-ucm-conf, libfprint, firmware, and so
 on). User docs: root `README.md` (chassis and index),
-`scripts-audio-fix/README.md`, `scripts-fingerprint-fix/README.md`.
+`scripts-audio-fix/README.md`, `scripts-fingerprint-fix/README.md`,
+`scripts-igpu-fix/README.md`.
 This file is what to do when changing the tree.
 
 Fixes **layer on the base system**. The base may be a mutable root or
@@ -19,6 +20,7 @@ an ostree/immutable image. One installer must work on both.
 | `ucm2/`, `systemd/` | Audio payload at repo root (historical). New fixes do not add sibling top-level payload dirs |
 | `scripts-fingerprint-fix/` | Fingerprint (EgisTec 1c7a:0570). Load-bearing: `scripts-fingerprint-fix/AGENTS.md` |
 | `fingerprint/`, `udev/` | Fingerprint overlay sources and the capture-tool udev rule |
+| `scripts-igpu-fix/` | iGPU (i915 `enable_dc=0`). Load-bearing: `scripts-igpu-fix/AGENTS.md` |
 
 Do not revive a generic `scripts/` directory. Do not put a second
 subsystem's files inside `scripts-audio-fix/`.
@@ -33,7 +35,9 @@ their `_files/` trees **out of git**. They are local research only
   on a mutable root we still stay off `/usr` so the same paths work.
 - Writable paths: `/etc` (units, drop-ins, udev, environment.d) and
   `/var` (overlay upper dirs, scripts, state). If upstream would have
-  put files in `/usr`, overlay or bind them from `/var`.
+  put files in `/usr`, overlay or bind them from `/var`. The iGPU
+  fix writes bootloader kernel arguments instead (`rpm-ostree kargs`
+  or `grubby`).
 - Each fix ships `install.sh`, `uninstall.sh`, and `verify.sh`.
   `uninstall.sh` must reverse that fix only: stop, disable, and delete
   **its** units and files. Leave other `scripts-<area>-fix` layers
@@ -68,7 +72,8 @@ local file I/O through a queue.
 ## Coding defaults
 
 - Change only the `scripts-<area>-fix` (and payload) the task names.
-  An audio task does not edit fingerprint files, and the reverse.
+  An audio task does not edit fingerprint or iGPU files, and the
+  reverse.
 - After a fix's payload or mixer/udev change, say what the user should
   run (`verify.sh` and the relevant hardware test). Do not claim the
   device is fixed without those checks.
