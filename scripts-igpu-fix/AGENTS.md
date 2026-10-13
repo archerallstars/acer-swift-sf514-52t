@@ -25,8 +25,10 @@ root `AGENTS.md`. Chassis index: root `README.md`.
 
 - GPU is Intel UHD Graphics 620, PCI `8086:5917` rev 07, Kaby
   Lake-R GT2, driver `i915`, DMC `kbl_dmc_ver1_04.bin`.
-- Hang is random on **shutdown** (ACPI S5), not on restart. Journal
-  stops during late unmount; no Oops, GPU hang, or pstore.
+- Hang was random on **shutdown** (ACPI S5), not on restart. Journal
+  stopped during late unmount; no Oops, GPU hang, or pstore.
+  Live-tested: `i915.enable_dc=0` makes S5 power-off complete
+  promptly on this chassis.
 - `i915 *ERROR* Atomic update failure on pipe A/B` is a vblank
   miss. It is a fingerprint of the same timing class, not the
   freeze line itself.
@@ -48,8 +50,9 @@ root `AGENTS.md`. Chassis index: root `README.md`.
   `distrobox-host-exec sudo`; verify re-execs as the same user.
 - `verify.sh` passes only when live `/proc/cmdline` has DC=0 and
   omits PSR=0. Staged mismatch or live-not-yet-rebooted is a fail
-  (reboot required). Do not claim shutdown is fixed from verify
-  alone; the user still tests a shutdown.
+  (reboot required). Live on this chassis: with DC=0, ACPI S5
+  shutdown completes promptly (almost instant). `verify.sh` still
+  does not itself power the machine off.
 
 ## Out of v1 unless the user asks
 

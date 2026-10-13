@@ -30,6 +30,19 @@ The payload is bootloader kernel arguments (`rpm-ostree kargs` on
 ostree, `grubby` on a mutable Fedora root). Nothing is copied into
 `/usr`, `/etc`, or `/var`.
 
+## What works
+
+Live on Fedora Silverblue 44 on this chassis with `i915.enable_dc=0`
+and PSR at the kernel default:
+
+| Step | Result |
+| --- | --- |
+| `verify.sh` | live and staged kargs have `i915.enable_dc=0`, omit `i915.enable_psr=0` |
+| Shutdown (ACPI S5) | power-off completes promptly (almost instant) |
+| Restart | still works (it already did before this karg) |
+
+`i915.enable_psr=0` alone did not stop the hang on this machine.
+
 ## Performance
 
 `i915.enable_dc=0` does not cut 3D, video decode, or compositor
@@ -60,7 +73,7 @@ Install will:
 4. Delete `i915.enable_psr=0` when that token is staged.
 5. Ask for a reboot when live `/proc/cmdline` does not yet match.
 
-Then reboot, verify, and test a **shutdown** (not only a restart):
+Then reboot and verify:
 
 ```bash
 ./scripts-igpu-fix/verify.sh
@@ -69,6 +82,8 @@ Then reboot, verify, and test a **shutdown** (not only a restart):
 `verify.sh` passes only when the live command line has
 `i915.enable_dc=0` and does not have `i915.enable_psr=0`. If staged
 kargs already match but the live kernel does not, reboot first.
+On this chassis a shutdown after that reboot finished almost
+instantly.
 
 ## Uninstall
 
