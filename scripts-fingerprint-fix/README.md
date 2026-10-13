@@ -43,7 +43,7 @@ Live on Fedora Silverblue 44 on this chassis:
 | Enumerate | `fprintd-list` names Egis 0570, `scan-type` is `press` |
 | Enroll | three neighbouring stages (sweet band 0.25–0.50), gallery `aay` × 9 |
 | Verify | same-finger hit rate matches Windows on this pad (about 3–4 out of 5) |
-| Login | PAM is left to the distro (`authselect enable-feature with-fingerprint`) |
+| Login | GDM `gdm-fingerprint` + `pam_fprintd` (session unlock works) |
 
 ## Distro support
 
@@ -64,6 +64,32 @@ openSUSE may not load on Debian.
 PAM is left to the distro (`authselect enable-feature with-fingerprint`
 or `pam-auth-update --enable fprintd`). This overlay does not edit
 `/etc/pam.d`.
+
+## GNOME login keyring
+
+Fingerprint login and the GNOME login keyring are different steps.
+
+On a live GDM fingerprint login on this chassis (2026-10-12), the
+overlay matched (`verify score=0.5146`), and audit logged
+`PAM:authentication grantors=pam_fprintd`. GNOME still asked for the
+password to unlock the keyring. That is expected.
+
+The login keyring (`~/.local/share/keyrings/login.keyring`) is
+encrypted with the **account password**. Fedora's `gdm-password`
+PAM stack has `pam_gnome_keyring.so` on auth and
+`pam_gnome_keyring.so auto_start` on session, so a password login
+can decrypt it. `gdm-fingerprint` has no `pam_gnome_keyring` line,
+and `pam_fprintd` does not put a password in the PAM authtok, so
+there is nothing to decrypt with.
+
+GNOME Settings “Login with fingerprint” only selects the GDM
+fingerprint path. It does not make the scanner a keyring key.
+After a **password** login, later fingerprint unlock of the lock
+screen usually finds the keyring already open. A **fresh** GDM
+fingerprint login starts a locked keyring and shows the dialog.
+
+This overlay does not change PAM or gnome-keyring. Type the account
+password in that dialog when it appears.
 
 ## Install
 
