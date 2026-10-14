@@ -15,7 +15,7 @@ efibootmgr_executable_name="efibootmgr"
 
 # --- Limine entry name fragments (case-insensitive match against efibootmgr labels) ---
 # Only Limine entries trigger the F2 hang risk warning. Fedora
-# systemd-boot, GRUB, and other bootloaders are ignored.
+# GRUB2, systemd-boot, and other bootloaders are ignored.
 limine_entry_name_fragments=("limine")
 windows_entry_name_fragment="Windows Boot Manager"
 
@@ -148,7 +148,7 @@ host_read_efibootmgr_output() {
 
 # Count Limine boot entries in NVRAM. A non-zero count means the
 # F2 hang risk is present on Acer Insyde firmware. Other bootloaders
-# (Fedora systemd-boot, GRUB) are ignored.
+# (Fedora GRUB2, systemd-boot) are ignored.
 check_limine_entries_present() {
 	if [[ -z "${efibootmgr_output_text}" ]]; then
 		# No efibootmgr output; cannot evaluate NVRAM entries.

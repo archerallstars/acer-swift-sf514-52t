@@ -2,7 +2,7 @@
 # Interactive recovery for the Acer Insyde F2 BIOS Setup hang caused
 # by Limine EFI entries in NVRAM. Lists NVRAM boot entries, highlights
 # Limine entries only, and deletes the selected entry after explicit
-# per-entry confirmation. Other bootloaders (Fedora systemd-boot,
+# per-entry confirmation. Other bootloaders (Fedora GRUB2,
 # GRUB, etc.) are never touched. Never deletes without a typed "yes".
 #
 # Run on the host, as root. From distrobox the script re-execs with
@@ -18,7 +18,7 @@ set -euo pipefail
 efibootmgr_executable_name="efibootmgr"
 
 # --- Limine entry name fragments (case-insensitive match against efibootmgr labels) ---
-# Only Limine entries are offered for deletion. Fedora systemd-boot,
+# Only Limine entries are offered for deletion. Fedora GRUB2,
 # GRUB, and other bootloaders are left alone.
 limine_entry_name_fragments=("limine")
 windows_entry_name_fragment="Windows Boot Manager"
@@ -121,7 +121,7 @@ entries_list_all() {
 # Prompt the user to delete each Limine entry. Asks for a typed
 # "yes" before each efibootmgr --delete-bootnum call. Never deletes
 # without confirmation. Never touches other bootloaders (Fedora
-# systemd-boot, GRUB) or the Windows Boot Manager entry.
+# GRUB2, systemd-boot) or the Windows Boot Manager entry.
 entries_prompt_delete_limine() {
 	local entry_line
 	local entry_boot_number

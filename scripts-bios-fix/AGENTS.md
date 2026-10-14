@@ -10,7 +10,7 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
 ## Do not
 
 - Target any bootloader other than Limine. Fedora Silverblue
-  (systemd-boot + shim) works fine with Secure Boot on this
+  (GRUB2 + shim) works fine with Secure Boot on this
   chassis. Only Limine EFI entries cause the F2 hang. The
   scripts must never delete Fedora, GRUB, or other entries.
 - Try to patch Limine. This is an Acer Insyde firmware bug,
@@ -35,7 +35,7 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
   hangs on the Acer logo when F2 is pressed and a Limine EFI
   entry exists in NVRAM. F12 boot menu and `systemctl reboot
   --firmware-setup` may also hang.
-- Fedora Silverblue 44 with systemd-boot and Secure Boot works
+- Fedora Silverblue 44 with GRUB2 + shim and Secure Boot works
   fine on this chassis. The hang is specific to Limine EFI
   entries on Acer Insyde firmware.
 - After deleting the Limine entry, F2 works again. The user must

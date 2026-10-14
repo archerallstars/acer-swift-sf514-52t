@@ -8,8 +8,8 @@ Setup) hangs forever on the Acer logo. The boot menu key (F12) and
 `systemctl reboot --firmware-setup` may also hang.
 
 This is **not a Limine bug** — it is an Acer Insyde firmware bug.
-Fedora Silverblue (systemd-boot + shim) works fine with Secure Boot
-on this chassis. The hang is specific to Limine EFI entries.
+Fedora Silverblue (GRUB2 + shim) works fine with Secure Boot on this
+chassis. The hang is specific to Limine EFI entries.
 
 | | |
 | --- | --- |
@@ -33,7 +33,7 @@ On Acer laptops with Insyde firmware, the BIOS Setup path (F2) hangs
 when a **Limine** EFI boot entry is present in NVRAM. This is a
 firmware bug — Acer's UEFI has hardcoded special treatment for
 Windows Boot Manager and breaks on Limine entries. Fedora Silverblue
-(systemd-boot + shim) works fine with Secure Boot on this chassis.
+(GRUB2 + shim) works fine with Secure Boot on this chassis.
 
 Reports on Acer + Limine (2025–2026):
 
@@ -52,7 +52,7 @@ Reports on Acer + systemd-boot (same firmware class):
 
 **Not fixed.** Acer has not released a firmware update for this. The
 bug is Acer's, not Limine's. On this chassis the hang is specific to
-Limine entries — Fedora Silverblue works fine.
+Limine entries — Fedora Silverblue (GRUB2 + shim) works fine.
 
 ## Workarounds (ranked)
 
