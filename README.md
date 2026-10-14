@@ -30,6 +30,7 @@ on a mutable distro.
 | Audio (Intel AVS + Realtek ALC255) | [`scripts-audio-fix/README.md`](scripts-audio-fix/README.md) | shipped |
 | Fingerprint (EgisTec 1c7a:0570) | [`scripts-fingerprint-fix/README.md`](scripts-fingerprint-fix/README.md) | live-tested on this chassis |
 | iGPU (i915 display C-states) | [`scripts-igpu-fix/README.md`](scripts-igpu-fix/README.md) | live-tested on this chassis |
+| BIOS Setup access (Limine + Insyde F2 hang) | [`scripts-bios-fix/README.md`](scripts-bios-fix/README.md) | documented + recovery helper |
 
 New work goes in a new `scripts-<area>-fix/` directory. Do not dump
 unrelated fixes into `scripts-audio-fix/`.

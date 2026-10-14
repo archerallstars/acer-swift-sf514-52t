@@ -19,3 +19,6 @@
 # Editor / OS noise
 *~
 .DS_Store
+
+# MiMoCode internal tooling state; not part of the fix layer.
+.mimocode/
