@@ -113,10 +113,12 @@ static unsigned char repeat_pkts[][EGIS0570_PKTSIZE] =
 #define EGIS0570_ENROLL_TOO_FAR 0.25
 
 /*
- * Clean-room ridge matcher accept point. Tuned to reject adjacent-finger
- * ridge flow at 114x57; live corpus on this chassis may move it.
- * Do not lower this to make one unlock succeed.
+ * Clean-room ridge matcher accept point. Live same-finger verifies
+ * on this chassis (23 presses, sweet-band gallery aay×9): 11 passed
+ * at 0.48; six well-placed presses sat at 0.44–0.47; three bad
+ * placements were ≤ 0.33. 0.44 takes that cliff and still rejects
+ * 0.18–0.33. Do not drop to 0.40. Do not lower further to chase 5/5.
  */
-#define EGIS0570_MATCH_THRESHOLD 0.48
+#define EGIS0570_MATCH_THRESHOLD 0.44
 
 #endif

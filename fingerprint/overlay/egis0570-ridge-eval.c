@@ -32,7 +32,7 @@
 /* Must match fingerprint/overlay/egis0570.h. */
 static const int configured_frame_width_pixels = 114;
 static const int configured_frame_height_pixels = 57;
-static const double configured_match_threshold = 0.48;
+static const double configured_match_threshold = 0.44;
 static const double configured_minimum_present_mean = 18.0;
 static const double configured_minimum_present_stddev = 7.0;
 

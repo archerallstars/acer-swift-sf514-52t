@@ -27,8 +27,9 @@ That combination is libfprint issue #418: enumeration works, usable login does n
    bright-pixel mask then dropped full-coverage re-presses
    (`probe_skin` 0.99–1.00, mean ~50) to 0.28–0.38. Live presses
    already light most of the pad; same-hold capture dumps at 40%
-   zeros were the wrong proxy. Threshold stays 0.48. No vendor
-   DLL. Synthetic self-test: `make -C fingerprint/overlay self-test`.
+   zeros were the wrong proxy. Threshold is 0.44 (same-finger cliff
+   on this chassis). No vendor DLL. Synthetic self-test:
+   `make -C fingerprint/overlay self-test`.
 
 Stock NBIS is the baseline we expect to fail on 114×57. The overlay does not ship it as the login matcher.
 
@@ -67,8 +68,10 @@ is now three fingertip strips in a consecutive sweet band: a new
 strip ≥ 0.50 against a stored one is the same height (slide more);
 ≤ 0.25 against every stored strip jumped a gap (slide less). Each
 strip stores all three hold bursts. Verify already takes the best
-score against every stored frame. Threshold stays 0.48 until an
-other-finger corpus exists. Sweet-band enroll is live-tested on this
+score against every stored frame. After sweet-band enroll, 23 live
+verifies: 11 passed at 0.48, six well-placed presses sat at
+0.44–0.47, three bad placements were ≤ 0.33. Threshold is 0.44.
+Do not drop to 0.40. Sweet-band enroll is live-tested on this
 chassis. Journal: `verify score=`, `probe_skin=`, `hold_frames=`,
 `enroll section=`, `too_similar_at=`, `too_far_at=`.
 
@@ -82,4 +85,6 @@ uses that init. Rebuild the overlay `.so` and reinstall before enroll.
 
 ## Matcher gate
 
-Do not lower `EGIS0570_MATCH_THRESHOLD` in `egis0570.h` just to make one unlock succeed. Tune it from a small same-finger / other-finger corpus dumped by the capture tool (`--label finger` vs another finger).
+`EGIS0570_MATCH_THRESHOLD` is 0.44 from a same-finger live sample on
+this chassis. Do not drop to 0.40. An other-finger corpus from the
+capture tool (`--label finger` vs another finger) is still missing.

@@ -14,8 +14,8 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
   `LD_LIBRARY_PATH=/var/usrlocal/lib64`.
 - Copy anything into ostree `/usr`.
 - Lower `EGIS0570_MATCH_THRESHOLD` in `fingerprint/overlay/egis0570.h`
-  just to make one unlock succeed. Tune it from a same-finger /
-  other-finger corpus.
+  below 0.44 to chase 5/5 or one unlock. 0.44 is the live same-finger
+  cliff on this chassis. Do not drop to 0.40.
 - Delete `/var/lib/fprint/` from `uninstall.sh`.
 - Touch `scripts-audio-fix/`, `ucm2/`, or the ALSA systemd units.
 - Turn this driver back into `FpImageDevice`. Image-device enroll
@@ -35,8 +35,8 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
   lights up). Do not bring back a bright-pixel mask: it dropped
   full-coverage re-press scores from ~0.65 to ~0.36.
 - Official Windows driver on this chassis is about 3–4 accepts out
-  of 5. That is the quality bar. Do not lower MATCH_THRESHOLD to
-  chase 5/5.
+  of 5. That is the quality bar. MATCH_THRESHOLD is 0.44. Do not
+  drop to 0.40 to chase 5/5.
 - Bulk OUT `0x04`, bulk IN `0x83`, 32512-byte captures = five 114×57
   frames. Protocol: `fingerprint/protocol.md`.
 
@@ -52,7 +52,7 @@ layering: root `AGENTS.md`. Chassis index: root `README.md`.
   already stored strip is too similar (slide more). A section that
   scores ≤ 0.25 against every stored strip jumped a gap (slide
   less). Both retry `FP_DEVICE_RETRY_CENTER_FINGER`. Verify stays
-  best single-strip NCC ≥ 0.48; do not stitch sections or lower
+  best single-strip NCC ≥ 0.44; do not stitch sections or lower
   MATCH_THRESHOLD to cover a gap. Each section stores every hold
   burst. Do not bring back the mean≥28 / skin≥0.55 enroll gate. No
   vendor engine unless Phase 4 on a live corpus fails.

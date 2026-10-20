@@ -21,7 +21,7 @@ Deeper research notes: [`fingerprint/diagnosis.md`](../fingerprint/diagnosis.md)
 | USB | `1c7a:0570` serial `W70D612F` (USB string `070D612F`) bcdDevice 10.41 |
 | Type | Landscape press pad below the arrow keys (finger sits portrait), five 114×57 frames per capture |
 | Stock driver | Fedora `egis0570` (swipe + NBIS) |
-| Overlay matcher | z-score NCC, threshold 0.48 |
+| Overlay matcher | z-score NCC, threshold 0.44 |
 | Enroll | 3 neighbouring strips, sweet band 0.25–0.50 |
 | Quality bar | Official Windows driver on this chassis is about 3–4 accepts out of 5 |
 
@@ -289,14 +289,14 @@ Journal lines from the overlay are scores and frame statistics
 
 ### Matcher false-accept
 
-`EGIS0570_MATCH_THRESHOLD` is 0.48. Verify takes the **best** score
+`EGIS0570_MATCH_THRESHOLD` is 0.44. Verify takes the **best** score
 across nine gallery frames and three live hold bursts. Adjacent
 fingers on the same hand are the hard case on a 114×57 landscape
 strip. There is no other-finger corpus yet, so the false-accept rate
-is unmeasured. Do not lower the threshold to chase 5/5. Stock NBIS
+is unmeasured. Do not drop to 0.40 or chase 5/5. Stock NBIS
 `bz3_threshold` 25 on this pad size was already a weak control.
 Sweet-band enroll only chooses which skin those nine frames came
-from; unlock is still one live strip vs the gallery at 0.48.
+from; unlock is still one live strip vs the gallery at 0.44.
 
 ### Host steps
 
@@ -309,8 +309,8 @@ from; unlock is still one live strip vs the gallery at 0.48.
 
 ## Findings
 
-Live on this chassis. Threshold stays 0.48; do not lower it to chase
-5/5.
+Live on this chassis. Threshold is 0.44 from a same-finger cliff;
+do not drop to 0.40 or chase 5/5.
 
 ### Stock Fedora treats a press pad as a swipe
 
@@ -348,7 +348,7 @@ consecutive present captures count as a hold.
 
 Clean-room z-score NCC in `egis0570-ridge.c`: stddev floor 1.0, clamp
 ±3, rotation ±15°, translation ±20 px step 1, geometric min overlap
-0.45 of the 114×57 pad. `EGIS0570_MATCH_THRESHOLD` is 0.48.
+0.45 of the 114×57 pad. `EGIS0570_MATCH_THRESHOLD` is 0.44.
 
 Tried and dropped on live re-presses against this pad:
 
@@ -380,8 +380,8 @@ strip that scores ≥ 0.50 against a stored one is the same height
 jumped a gap (slide less). Both retry as
 `enroll-finger-not-centered`. A neighbour in between is stored.
 Each section stores all three hold bursts, so the gallery is
-`aay` × 9. Verify is unchanged: best single-strip NCC ≥ 0.48
-across every stored frame and the three live hold bursts. Journal:
+`aay` × 9. Verify is best single-strip NCC ≥ 0.44 across every
+stored frame and the three live hold bursts. Journal:
 `too_similar_at=` and `too_far_at=`.
 
 Eight identical-height stages and a mean/skin quality gate both
@@ -410,8 +410,12 @@ That is 5/7 in this sample, in the same band as Windows. The two
 misses (0.28 and 0.23) were presses in a gap between far-apart
 enroll islands. Consecutive sweet-band enroll (0.25–0.50) photographs
 that in-between skin. Live-tested on this chassis after that change.
-Misses can still happen with a well-placed finger. Do not lower the
-threshold to chase 5/5.
+
+A later 23-press sample after sweet-band enroll still sat on a
+cliff: 11 passed at 0.48, six well-placed presses scored 0.44–0.47,
+three bad placements were ≤ 0.33. The gate is now **0.44** so those
+near misses pass. Misses can still happen. Do not drop to 0.40 or
+chase 5/5.
 
 ### Overlay load on ostree
 
@@ -479,8 +483,9 @@ Score two captured PGM frames with the same matcher the overlay uses:
 
 ## Limits (fingerprint v1)
 
-- Matcher threshold 0.48 is a starting point. A too-low value accepts
-  the wrong finger. Do not lower it to chase 5/5. Enroll sweet-band
+- Matcher threshold 0.44 is from a 23-press same-finger sample on
+  this chassis (11/23 passed at 0.48; six well-placed presses sat at
+  0.44–0.47). Do not drop to 0.40 or chase 5/5. Enroll sweet-band
   `TOO_FAR` 0.25 is live-tested on this chassis (from those 0.23–0.28
   gap misses).
 - 114×57 is a small landscape pad with a portrait finger. Adjacent
@@ -504,7 +509,7 @@ archived). There is no GitHub project that accepts libfprint driver
 PRs.
 
 This overlay is a chassis-tuned press-mode layer (Windows init,
-three-strip `FPI_PRINT_RAW` gallery, 0.48 z-score NCC) without an
+three-strip `FPI_PRINT_RAW` gallery, 0.44 z-score NCC) without an
 other-finger FAR corpus or a distinctive `full_name`. This repo is
 the delivery path. A later GitLab merge request would need a FAR
 corpus, a generic press-mode driver (or a new id so it can coexist
